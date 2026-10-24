@@ -1,0 +1,123 @@
+# Wedding configuration. Copy to /etc/rsvp/wedding.toml on the server.
+# Secrets (link-signing key, Discord webhook, Resend key) live in /etc/rsvp/env, never here.
+
+[couple]
+a_first = "Alex"
+a_last = "Morgan"
+b_first = "Sam"
+b_last = "Rivera"
+# monogram = "AS"            # defaults to the two first initials
+host_line = "Together with their families"
+
+[wedding]
+date = "2027-06-12"
+location = "Hobart, Tasmania"
+utc_offset = "+10:00"         # venue time zone offset (for calendar files + deadline)
+rsvp_deadline = "2027-04-01"
+save_the_date_note = "Formal invitation to follow"
+return_address = ["Alex Morgan & Sam Rivera", "12 Example Street", "Hobart TAS 7000"]
+# One line printed on Australia-based households' cards and emails (optional).
+# australia_note = "Travelling from overseas? Your page has flights and visa details."
+
+[[wedding.info]]
+title = "Getting there"
+body = "Hobart Airport is 20 minutes from the city. We'll run a shuttle from the ceremony to the reception and back into town at the end of the night."
+
+# Optional per-audience info: audience = "all" (default), "australia" or "us".
+# Households are flagged "lives in Australia" in the admin.
+[[wedding.info]]
+title = "Travelling from overseas"
+audience = "australia"
+body = "Fly into the nearest international airport and allow a few days to recover from the trip. Check visa/ESTA requirements before booking."
+
+[[wedding.info]]
+title = "Where to stay"
+body = "We've held a block of rooms at the Hotel Example, so mention our names when booking. Let us know on your RSVP if you'd like other recommendations."
+
+[site]
+base_url = "https://wedding.example.com"   # no trailing slash
+rp_id = "wedding.example.com"              # passkey domain; must match base_url's host
+bind = "127.0.0.1:8080"                    # Caddy terminates TLS in front of this
+# title = "Alex & Sam"
+
+[theme]
+ink = "#24211d"
+muted = "#6f675c"
+accent = "#8c6a3f"
+paper = "#fbf8f1"
+rule = "#c9b99a"
+
+[[events]]
+slug = "ceremony"
+name = "Ceremony"
+starts = "2027-06-12T15:00"
+ends = "2027-06-12T16:00"
+venue = "St David's Cathedral"
+address = "23 Murray Street, Hobart"
+dress = "Formal"
+meal = false
+default_invite = true
+
+[[events]]
+slug = "reception"
+name = "Reception"
+starts = "2027-06-12T17:30"
+ends = "2027-06-12T23:30"
+venue = "The Glasshouse"
+address = "Brooke Street Pier, Hobart"
+dress = "Formal"
+meal = true
+default_invite = true
+
+[[events]]
+slug = "brunch"
+name = "Farewell brunch"
+starts = "2027-06-13T10:30"
+ends = "2027-06-13T13:00"
+venue = "Salamanca Lawns"
+address = "Salamanca Place, Hobart"
+dress = "Relaxed"
+meal = false
+default_invite = false
+
+[[meals]]
+slug = "beef"
+name = "Beef"
+description = "Slow-roasted Cape Grim beef, potato gratin, greens"
+
+[[meals]]
+slug = "fish"
+name = "Fish"
+description = "Pan-seared ocean trout, fennel, beurre blanc"
+
+[[meals]]
+slug = "veg"
+name = "Vegetarian"
+description = "Wild mushroom risotto, parmesan, truffle"
+
+[[meals]]
+slug = "kids"
+name = "Kids' meal"
+description = "Chicken, chips & veggies"
+kids = true
+
+[rsvp]
+ask_dietary = true
+ask_song = true
+ask_message = true
+ask_accommodation = true
+ask_transport = true
+transport_question = "Would you like a seat on the shuttle between ceremony and reception?"
+
+[email]
+# Must be on a domain verified in Resend.
+from = "Alex & Sam <hello@mail.wedding.example.com>"
+reply_to = "alexandsam@example.com"
+
+[backup]
+bucket = "your-project-rsvp-snapshots"     # daily snapshots (retention-locked bucket)
+hour_utc = 17
+keep_local = 14
+
+[print]
+paper = "a4"     # or "us-letter"; home-print sheets and address labels

@@ -1,0 +1,34 @@
+[Unit]
+Description=Claude Code remote-control session for managing the guest list
+After=network-online.target rsvp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rsvp-agent
+Group=rsvp-agent
+SupplementaryGroups=rsvp
+WorkingDirectory=/srv/rsvp-agent
+Environment=HOME=/home/rsvp-agent
+Environment=PATH=/home/rsvp-agent/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RSVP_ACTOR=claude
+Environment=RSVP_CONFIG=/etc/rsvp/wedding.toml
+Environment=RSVP_DATA=/var/lib/rsvp
+Environment=RSVP_ENV_FILE=/etc/rsvp/env
+# Connect from claude.ai/code or the Claude app; sessions open in /srv/rsvp-agent.
+ExecStart=/home/rsvp-agent/.local/bin/claude remote-control --name wedding-guest-list --spawn same-dir --capacity 4
+Restart=always
+RestartSec=10
+UMask=0007
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rsvp /srv/rsvp-agent /home/rsvp-agent
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+MemoryMax=1200M
+
+[Install]
+WantedBy=multi-user.target

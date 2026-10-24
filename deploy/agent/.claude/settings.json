@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rsvp household:*)",
+      "Bash(rsvp guest:*)",
+      "Bash(rsvp rsvps:*)",
+      "Bash(rsvp events)",
+      "Bash(rsvp render:*)",
+      "Bash(rsvp audit:*)",
+      "Bash(rsvp journal verify)",
+      "Bash(rsvp check)",
+      "Bash(rsvp --help)",
+      "Read(./**)",
+      "Write(./exports/**)",
+      "Edit(./exports/**)"
+    ],
+    "ask": [
+      "Bash(rsvp household rotate-link:*)",
+      "Bash(rsvp household archive:*)",
+      "Bash(rsvp phase:*)"
+    ],
+    "deny": [
+      "Bash(sqlite3:*)",
+      "Bash(rm:*)",
+      "Bash(sudo:*)",
+      "Bash(rsvp invite:*)",
+      "Bash(rsvp users:*)",
+      "Bash(rsvp journal replay)",
+      "Bash(rsvp rehash-tokens)",
+      "Bash(rsvp serve)",
+      "Read(/etc/rsvp/env)",
+      "Read(/var/lib/rsvp/**)",
+      "Edit(/var/lib/rsvp/**)",
+      "Write(/var/lib/rsvp/**)"
+    ],
+    "defaultMode": "default"
+  }
+}

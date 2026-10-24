@@ -1,0 +1,21 @@
+[Unit]
+Description=Litestream replication of the RSVP database to GCS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rsvp
+Group=rsvp
+UMask=0007
+ExecStart=/usr/bin/litestream replicate -config /etc/litestream.yml
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rsvp
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Refuse to commit guest data or secrets. Enable with: git config core.hooksPath .githooks
+set -euo pipefail
+bad=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(db|db-wal|db-shm|csv|jsonl)(\.gz)?$|(^|/)households[^/]*\.json$|(^|/)exports/|(^|/)data/|(^|/)deploy/([^/]+/)?wedding\.toml$|(^|/)(\.env|env)$' || true)
+if [ -n "$bad" ]; then
+  echo "pre-commit: refusing to commit guest data / real config / secrets:" >&2
+  echo "$bad" | sed 's/^/  /' >&2
+  exit 1
+fi
+# Block anything that looks like a guest link token or the link-signing secret.
+if git diff --cached -U0 | grep -E '^\+' | grep -qE '/i/[a-z2-7]{26}\b|RSVP_SECRET=[0-9a-f]{64}'; then
+  echo "pre-commit: staged changes contain a guest link token or RSVP_SECRET" >&2
+  exit 1
+fi

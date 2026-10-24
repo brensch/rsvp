@@ -1,0 +1,23 @@
+/target
+
+# ---- Guest data never goes in git. It lives only on the server (SQLite, journal, backups). ----
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.db.gz
+*.jsonl
+*.jsonl.gz
+*.csv
+households*.json
+exports/
+backups/
+
+# Real deployment configs (names, venues, addresses). Only the example is tracked.
+deploy/wedding.toml
+deploy/*/wedding.toml
+dev.toml
+
+# Secrets
+.env
+env

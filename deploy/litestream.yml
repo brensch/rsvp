@@ -1,0 +1,12 @@
+# Continuous replication of the RSVP database to GCS (every second).
+# Restore:  litestream restore -config /etc/litestream.yml -o /var/lib/rsvp/rsvp.db /var/lib/rsvp/rsvp.db
+dbs:
+  - path: /var/lib/rsvp/rsvp.db
+    replicas:
+      - type: gcs
+        bucket: {LS_BUCKET}
+        path: rsvp.db
+        sync-interval: 1s
+        snapshot-interval: 6h
+        retention: 720h
+        validation-interval: 12h

@@ -1,0 +1,50 @@
+[Unit]
+Description=Wedding RSVP portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rsvp
+Group=rsvp
+EnvironmentFile=/etc/rsvp/env
+Environment=RSVP_CONFIG=/etc/rsvp/wedding.toml
+Environment=RSVP_DATA=/var/lib/rsvp
+Environment=RSVP_LOG_JSON=1
+ExecStart=/usr/local/bin/rsvp serve
+Restart=always
+RestartSec=2
+# Group-writable files so the Claude agent (group rsvp) can use the CLI on the same DB.
+UMask=0007
+TimeoutStopSec=20
+
+# Sandboxing
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rsvp
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target
