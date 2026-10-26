@@ -7,6 +7,8 @@ set -euo pipefail
 : "${PROJECT:?}" "${ZONE:?}" "${VM:?}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${CONFIG:-$ROOT/deploy/wedding.toml}"
+# The guest wording sits next to the config (optional; built-in defaults otherwise).
+COPY="$(dirname "$CONFIG")/copy.yaml"
 [ -f "$CONFIG" ] || { echo "missing $CONFIG (copy config/wedding.example.toml)"; exit 1; }
 
 cd "$ROOT"
@@ -18,10 +20,11 @@ BIN=target/release/rsvp
 SSH=(gcloud --project "$PROJECT" compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap --command)
 SCP=(gcloud --project "$PROJECT" compute scp --zone "$ZONE" --tunnel-through-iap)
 
-"${SCP[@]}" "$BIN" "$CONFIG" "$VM:/tmp/"
+"${SCP[@]}" "$BIN" "$CONFIG" $( [ -f "$COPY" ] && echo "$COPY" ) "$VM:/tmp/"
 "${SSH[@]}" 'set -e
   sudo install -m 0755 /tmp/rsvp /usr/local/bin/rsvp.new
   sudo install -o root -g rsvp -m 0640 /tmp/wedding.toml /etc/rsvp/wedding.toml
+  [ -f /tmp/copy.yaml ] && sudo install -o root -g rsvp -m 0640 /tmp/copy.yaml /etc/rsvp/copy.yaml
   # Validate before swapping: config parses, templates compile, DB + journal consistent.
   sudo -u rsvp RSVP_ENV_FILE=/etc/rsvp/env /usr/local/bin/rsvp.new check
   sudo mv /usr/local/bin/rsvp.new /usr/local/bin/rsvp

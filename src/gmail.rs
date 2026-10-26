@@ -284,16 +284,16 @@ mod tests {
     #[test]
     fn mime_is_well_formed_and_injection_safe() {
         let raw = mime(
-            "Alyssa & Brend <fam@example.com>",
+            "Alex & Sam <fam@example.com>",
             "guest@example.com\r\nBcc: evil@example.com",
             None,
-            "Save the date: Alyssa & Brend, 9 July 2027 ✨",
+            "Save the date: Alex & Sam, 12 June 2027 ✨",
             "hi",
             "<p>hi</p>",
             &[Attachment { filename: "invitation.pdf".into(), mime: "application/pdf".into(), bytes: vec![1, 2, 3] }],
         );
         let s = String::from_utf8(raw).unwrap();
-        assert!(s.starts_with("From: \"Alyssa & Brend\" <fam@example.com>\r\n"));
+        assert!(s.starts_with("From: \"Alex & Sam\" <fam@example.com>\r\n"));
         assert!(!s.contains("\r\nBcc:"), "no header injection");
         assert!(s.contains("Subject: =?UTF-8?B?"));
         assert!(s.contains("multipart/mixed") && s.contains("multipart/alternative") && s.contains("filename=\"invitation.pdf\""));

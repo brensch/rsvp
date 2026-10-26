@@ -47,6 +47,7 @@ static TEMPLATES: &[(&str, &str)] = &[
     ("labels", include_str!("../../templates/labels.typ")),
     ("place-cards", include_str!("../../templates/place-cards.typ")),
     ("report", include_str!("../../templates/report.typ")),
+    ("email-header", include_str!("../../templates/email-header.typ")),
     ("monogram", include_str!("../../templates/monogram.typ")),
 ];
 
@@ -164,6 +165,15 @@ impl Renderer {
     /// The emblem and initials as a PNG for the website header, `width_px` pixels wide.
     pub fn monogram_png(&self, cfg: &Config, width_px: f64) -> Result<Vec<u8>> {
         let doc = self.compile_named("monogram", &base_data(cfg, Layout::Card)?, HashMap::new())?;
+        let w = doc.pages().first().map(|p| p.frame.width().to_pt()).unwrap_or(1.0);
+        to_png(&doc, 0, width_px / w)
+    }
+
+    /// The top of an email (wreath, kicker, names, date, place) as a PNG, `width_px` wide.
+    pub fn email_header_png(&self, cfg: &Config, kicker: &str, width_px: f64) -> Result<Vec<u8>> {
+        let mut data = base_data(cfg, Layout::Card)?;
+        data["header_kicker"] = serde_json::Value::String(kicker.to_string());
+        let doc = self.compile_named("email-header", &data, HashMap::new())?;
         let w = doc.pages().first().map(|p| p.frame.width().to_pt()).unwrap_or(1.0);
         to_png(&doc, 0, width_px / w)
     }
@@ -319,6 +329,8 @@ pub fn base_data(cfg: &Config, layout: Layout) -> Result<Value> {
             "b_first": cfg.couple.b_first, "b_last": cfg.couple.b_last,
             "monogram": cfg.monogram(), "host_line": cfg.couple.host_line,
         },
+        // All guest wording (copy.yaml); templates use data.prose.cards.
+        "prose": cfg.prose.json(),
         "wedding": {
             "date_words": words::date_words(d),
             "year_words": words::year_words(d),
@@ -329,8 +341,8 @@ pub fn base_data(cfg: &Config, layout: Layout) -> Result<Value> {
             "day": d.day(), "month": words::month_name(d.month()), "year": d.year(),
             "location": cfg.wedding.location,
             "deadline": words::date_medium(deadline),
-            "std_note": cfg.wedding.save_the_date_note,
-            "celebration_note": cfg.wedding.celebration_note,
+            "std_note": cfg.prose.t("notes.save_the_date"),
+            "celebration_note": cfg.prose.opt("notes.celebration"),
             "return_address": cfg.wedding.return_address,
             "site": site_host(cfg),
             "first_event": {
@@ -391,7 +403,7 @@ pub fn household_data(cfg: &Config, items: &[Item], layout: Layout) -> Result<(V
             "qr": qr_path,
             "events": events,
             "guests": guests,
-            "note": if h.australia { cfg.wedding.australia_note.clone() } else { None },
+            "note": if h.australia { cfg.prose.opt("notes.australia") } else { None },
         }));
     }
     data["items"] = Value::Array(out);

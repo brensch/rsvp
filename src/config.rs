@@ -8,6 +8,9 @@ use time::{Date, PrimitiveDateTime, UtcOffset};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
+    /// Guest-facing wording (copy.yaml next to this file, over the built-in defaults).
+    #[serde(skip)]
+    pub prose: crate::prose::Prose,
     pub couple: Couple,
     pub wedding: Wedding,
     pub site: Site,
@@ -57,27 +60,15 @@ pub struct Wedding {
     pub utc_offset: String,
     /// ISO date after which the RSVP form locks.
     pub rsvp_deadline: String,
-    /// Short note shown on the save the date ("Invitation to follow").
-    #[serde(default = "default_std_note")]
-    pub save_the_date_note: String,
     #[serde(default)]
     pub return_address: Vec<String>,
     /// Free-form markdown-ish paragraphs shown on the guest page (travel, accommodation, etc).
     #[serde(default)]
     pub info: Vec<InfoSection>,
-    /// One line printed on Australia-based households' cards and emails (travel heads-up).
-    #[serde(default)]
-    pub australia_note: Option<String>,
-    /// A line for everyone about a second celebration (save the date, its email and page).
-    #[serde(default)]
-    pub celebration_note: Option<String>,
 }
 
 fn default_offset() -> String {
     "+00:00".into()
-}
-fn default_std_note() -> String {
-    "Formal invitation to follow".into()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -157,6 +148,9 @@ pub struct Event {
     /// well; set it to just the address for e.g. a private home.
     #[serde(default)]
     pub map_query: Option<String>,
+    /// An exact map link (e.g. Google Maps with the venue's place ID). Takes priority over the search.
+    #[serde(default)]
+    pub map_url: Option<String>,
     #[serde(default)]
     pub dress: Option<String>,
     #[serde(default)]
@@ -174,6 +168,9 @@ pub struct Event {
 
 impl Event {
     pub fn map_url(&self) -> String {
+        if let Some(u) = self.map_url.as_deref().filter(|u| u.starts_with("https://")) {
+            return u.to_string();
+        }
         let q = self.map_query.clone().unwrap_or_else(|| format!("{}, {}", self.venue, self.address));
         format!("https://www.google.com/maps/search/?api=1&query={}", urlencoding::encode(&q))
     }
@@ -246,6 +243,11 @@ pub struct EmailConfig {
     /// The Gmail account emails must come from; connecting any other account is refused.
     #[serde(default)]
     pub account: Option<String>,
+    /// Safety lock: while set, every email goes to this address instead of its real recipient
+    /// (the subject says who it was for). Sends are otherwise recorded as normal, so the whole
+    /// flow can be tested; wipe that state before going live. Remove to send for real.
+    #[serde(default)]
+    pub redirect_all_to: Option<String>,
     #[serde(default)]
     pub reply_to: Option<String>,
 }
@@ -293,10 +295,16 @@ impl Default for PrintConfig {
 }
 
 impl Config {
+    /// The email safety lock's address, if the lock is on.
+    pub fn email_lock(&self) -> Option<&str> {
+        self.email.redirect_all_to.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
-        let cfg: Config = toml::from_str(&raw).context("parsing wedding.toml")?;
+        let mut cfg: Config = toml::from_str(&raw).context("parsing wedding.toml")?;
+        cfg.prose = crate::prose::Prose::load(&path.with_file_name("copy.yaml"))?;
         cfg.validate()?;
         Ok(cfg)
     }

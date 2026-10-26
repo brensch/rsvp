@@ -16,6 +16,7 @@ backups/
 # Real deployment configs (names, venues, addresses). Only the example is tracked.
 deploy/wedding.toml
 deploy/*/wedding.toml
+deploy/*/copy.yaml
 dev.toml
 
 # Secrets

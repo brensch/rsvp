@@ -43,7 +43,8 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/send", get(send_page).post(send_bulk))
         .route("/admin/send/test", post(send_test))
         .route("/admin/gmail/connect", get(gmail_connect))
-        .route("/admin/gmail/callback", get(gmail_callback))
+        .route("/admin/gmail/callback", get(gmail_return))
+        .route("/admin/gmail/finish", get(gmail_callback))
         .route("/admin/gmail/disconnect", post(gmail_disconnect))
         .route("/admin/users", get(users).post(user_role))
         .route("/admin/users/invite", post(create_invite))
@@ -279,7 +280,7 @@ fn new_person_row(p: &str) -> Markup {
     }
 }
 
-/// How a team member is shown as "added by": "Brend", "Julie (Alyssa's parent)", "Sam (helper)".
+/// How a team member is shown as "added by": "Sam", "Jo (Alex's parent)", "Kim (helper)".
 fn person_label(cfg: &Config, u: &store::User) -> String {
     match u.access() {
         "owner" => u.name.clone(),
@@ -361,6 +362,8 @@ struct Snapshot {
     responses: HashMap<(i64, String), Resp>,
     /// Emails sent/opened per (household, kind).
     mail: HashMap<(i64, String), store::MailStat>,
+    /// When each household last added its events to a calendar.
+    calendar: HashMap<i64, String>,
 }
 
 impl Snapshot {
@@ -372,6 +375,7 @@ impl Snapshot {
                     guests: store::all_guests(c)?,
                     responses: store::all_responses(c)?,
                     mail: store::mail_stats(c)?,
+                    calendar: store::calendar_last_downloads(c)?,
                 })
             })
             .await
@@ -517,6 +521,12 @@ async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Que
                 span.tile-label { "Replied" } span.tile-value { (replied) small { " / " (total) } }
                 div.meter { span class=(pct_class(pct)) {} }
                 span.tile-sub { (viewed_no_reply) " opened their link but haven't replied" }
+            }
+            div.tile {
+                @let added = snap.households.iter().filter(|h| snap.calendar.contains_key(&h.id)).count();
+                span.tile-label { "Added to calendar" } span.tile-value { (added) small { " / " (total) } }
+                div.meter { span class=(pct_class(if total > 0 { added * 100 / total } else { 0 })) {} }
+                span.tile-sub { a href="/admin/households?filter=calendar" { "See who" } " · households that downloaded their calendar file" }
             }
         }
         section.card.by-tier {
@@ -768,6 +778,8 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                 Some("std_opened") => snap.mail(h.id, "save_the_date").is_some_and(|m| m.opened > 0),
                 Some("invite_opened_no_reply") => h.rsvp_at.is_none() && snap.mail(h.id, "invitation").is_some_and(|m| m.opened > 0),
                 Some("nudged") => h.nudged_at.is_some() && h.rsvp_at.is_none(),
+                Some("calendar") => snap.calendar.contains_key(&h.id),
+                Some("no_calendar") => !snap.calendar.contains_key(&h.id),
                 _ => true,
             };
             text_ok && status_ok && side_ok && tier_ok && added_ok && filter_ok
@@ -829,6 +841,8 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                     option value="std_opened" selected[sel(&q.filter, "std_opened")] { "Opened save the date email" }
                     option value="invite_opened_no_reply" selected[sel(&q.filter, "invite_opened_no_reply")] { "Opened invitation, no reply" }
                     option value="nudged" selected[sel(&q.filter, "nudged")] { "No reply 2+ days after opening invitation" }
+                    option value="calendar" selected[sel(&q.filter, "calendar")] { "Added to calendar" }
+                    option value="no_calendar" selected[sel(&q.filter, "no_calendar")] { "Not added to calendar" }
                 }
                 select name="added" aria-label="Added by" {
                     option value="" { "Added by anyone" }
@@ -1135,10 +1149,11 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
                 store::submissions(c, Some(id), 20)?,
                 store::audit_log(c, 30, Some(("household", &id.to_string())))?,
                 store::sends_for(c, id)?,
+                store::calendar_downloads(c, id)?,
             )))
         })
         .await?;
-    let Some((h, guests, responses, subs, log, sends)) = data else { return Ok(ui::not_found()) };
+    let Some((h, guests, responses, subs, log, sends, cal)) = data else { return Ok(ui::not_found()) };
     let cfg = &st.cfg;
     let owner = s.user.is_owner();
     let token = store::household_token(&st.env.secret, &h);
@@ -1214,6 +1229,13 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
                     div.form-actions.save-bar { button.button.primary type="submit" { "Save" } }
                 }
                 section.card {
+                    p.muted.small {
+                        "Calendar: "
+                        @match &cal.last_at {
+                            Some(at) => { "added " (when(cfg, at)) @if cal.count > 1 { " (" (cal.count) " downloads)" } }
+                            None => { "not added yet" }
+                        }
+                    }
                     h2 { "Emails" }
                     @if sends.is_empty() { p.muted { "No emails sent yet." } } @else {
                         table.compact {
@@ -1288,7 +1310,7 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
                     p.small { a href=(url) target="_blank" rel="noopener noreferrer" { "Open their page ↗" } }
                     h3 { "Stationery" }
                     ul.downloads {
-                        @for k in [Kind::SaveTheDate, Kind::Invitation, Kind::Envelope] {
+                        @for k in [Kind::Invitation, Kind::Envelope] {
                             li { a href={ "/admin/stationery/" (k.slug()) ".pdf?household=" (h.id) } { (k.label()) } " " a.small href={ "/admin/stationery/" (k.slug()) ".png?household=" (h.id) } { "PNG" } }
                         }
                     }
@@ -1593,7 +1615,8 @@ async fn stationery(State(st): State<AppState>, Member(s): Member) -> AppResult 
     let body = html! {
         p.muted { "Everything here is generated from your guest list and the templates. Print-shop PDFs include 3 mm bleed and trim boxes; home-print sheets put two cards on " (st.cfg.print.paper) " with crop marks." }
         div.stationery-grid {
-            @for k in Kind::ALL {
+            // No save the date card: it goes out by email, as a link to their page.
+            @for k in Kind::ALL.into_iter().filter(|k| *k != Kind::SaveTheDate) {
                 section.card.stationery {
                     @if let Some(id) = first {
                         @if k != Kind::Report && k != Kind::Labels && k != Kind::PlaceCards {
@@ -1638,7 +1661,7 @@ struct StationeryQuery {
 
 async fn stationery_file(State(st): State<AppState>, Member(s): Member, Path(file): Path<String>, Query(q): Query<StationeryQuery>) -> AppResult {
     let Some((slug, ext)) = file.rsplit_once('.') else { return Ok(ui::not_found()) };
-    let Some(kind) = Kind::parse(slug) else { return Ok(ui::not_found()) };
+    let Some(kind) = Kind::parse(slug).filter(|k| *k != Kind::SaveTheDate) else { return Ok(ui::not_found()) };
     let ext: &'static str = match ext {
         "pdf" => "pdf",
         "png" => "png",
@@ -1782,11 +1805,19 @@ async fn send_page(State(st): State<AppState>, Member(s): Member, Query(fl): Que
     };
 
     let body = html! {
+        @if let Some(lock) = cfg.email_lock() {
+            div.alert.bad {
+                strong { "Email safety lock is on. " }
+                "Every email, including bulk sends and tests, goes only to " strong { (lock) } " instead of the guest, "
+                "with \"Not sent to …\" in the subject. Everything else is recorded as if it were real (sent, opened), so wipe that before going live. "
+                "To send for real, remove " code { "redirect_all_to" } " from wedding.toml and redeploy."
+            }
+        }
         @if !configured {
             div.alert.warn { "Email isn't set up yet. Connect the Gmail account in " a href="/admin/settings#gmail" { "Settings" } " first." }
         }
         div.grid2 {
-            (send_card("save_the_date", "Save the dates", "Each household gets an email with their card and their personal link. Households already sent are skipped.", "Send save the dates", &std_c))
+            (send_card("save_the_date", "Save the dates", "Each household gets a short email with the wreath and a button to their own save the date page. Households already sent are skipped.", "Send save the dates", &std_c))
             (send_card("invitation", "Invitations", "Each household gets their invitation with the details card attached and a link to RSVP. Households already sent are skipped.", "Send invitations", &inv_c))
         }
         section.card {
@@ -2021,6 +2052,26 @@ struct GmailCallback {
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
+}
+
+/// Google sends the browser back here. The admin session cookie is SameSite=Strict, so it isn't
+/// sent on this cross-site arrival; this page hops (same-site) to /admin/gmail/finish, which is.
+async fn gmail_return(axum::extract::RawQuery(q): axum::extract::RawQuery) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let next = format!("/admin/gmail/finish?{}", q.unwrap_or_default());
+    let page = html! {
+        (maud::DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="referrer" content="no-referrer";
+                meta http-equiv="refresh" content={ "0;url=" (next) };
+                title { "Connecting Gmail…" }
+            }
+            body { p { "Connecting Gmail… " a href=(next) { "Continue" } } }
+        }
+    };
+    page.into_response()
 }
 
 async fn gmail_callback(State(st): State<AppState>, Member(s): Member, headers: axum::http::HeaderMap, Query(q): Query<GmailCallback>) -> AppResult {
@@ -2429,7 +2480,10 @@ async fn delete_page(State(st): State<AppState>, Member(s): Member, Path(slug): 
 // Gallery
 
 async fn gallery(State(st): State<AppState>, Member(s): Member, Query(fl): Query<Flash>) -> AppResult {
-    let (photos, gpage) = st.db.call(|c| Ok((crate::site::photos(c)?, crate::site::get_page(c, "gallery")?))).await?;
+    let (photos, gpage, home) = st
+        .db
+        .call(|c| Ok((crate::site::photos(c)?, crate::site::get_page(c, "gallery")?, crate::site::home_photo(c)?.map(|p| p.id))))
+        .await?;
     let published = gpage.as_ref().is_some_and(|p| p.published);
     let body = html! {
         @if !published {
@@ -2457,6 +2511,11 @@ async fn gallery(State(st): State<AppState>, Member(s): Member, Query(fl): Query
                         button.button.small type="submit" name="action" value="caption" { "Save caption" }
                         button.button.small.ghost type="submit" name="action" value="up" disabled[i == 0] title="Move earlier" { "←" }
                         button.button.small.ghost type="submit" name="action" value="down" disabled[i + 1 == photos.len()] title="Move later" { "→" }
+                        @if home == Some(p.id) {
+                            button.button.small type="submit" name="action" value="home" title="Shown at the top of every invitation page. Click to stop." { "On invitation page ✓" }
+                        } @else {
+                            button.button.small.ghost type="submit" name="action" value="home" title="Show this photo on every invitation page" { "Show on invitation page" }
+                        }
                         button.button.small.ghost type="submit" name="action" value="delete" data-confirm="Remove this photo from the gallery?" { "Remove" }
                     }
                 }
@@ -2527,6 +2586,11 @@ async fn gallery_photo(State(st): State<AppState>, Member(s): Member, Path(id): 
             "up" => crate::site::move_photo(c, &actor, id, -1),
             "down" => crate::site::move_photo(c, &actor, id, 1),
             "delete" => crate::site::delete_photo(c, &actor, id),
+            // Toggle: this photo on the invitation page, or none.
+            "home" => {
+                let current = crate::site::home_photo(c)?.map(|p| p.id);
+                store::set_setting(c, &actor, "home_photo", &if current == Some(id) { String::new() } else { id.to_string() })
+            }
             _ => Ok(()),
         })
         .await?;

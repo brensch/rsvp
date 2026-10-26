@@ -69,17 +69,17 @@ impl Address {
 
     pub fn validate_fields(&self) -> Result<(), String> {
         if self.addr1.trim().is_empty() {
-            return Err("Please enter your street address.".into());
+            return Err(crate::prose::global().t("website.address.need_street"));
         }
         if self.city.trim().is_empty() {
-            return Err("Please enter your city or suburb.".into());
+            return Err(crate::prose::global().t("website.address.need_city"));
         }
         if self.country.trim().is_empty() {
-            return Err("Please choose your country.".into());
+            return Err(crate::prose::global().t("website.address.need_country"));
         }
         for v in [&self.addr1, &self.addr2, &self.city, &self.region, &self.postcode, &self.country] {
             if v.len() > 200 {
-                return Err("That's a very long address. Please shorten it.".into());
+                return Err(crate::prose::global().t("website.address.too_long"));
             }
         }
         Ok(())

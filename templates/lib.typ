@@ -4,6 +4,13 @@
 
 #let data = json("/data.json")
 #let T = data.theme
+// Card wording from copy.yaml, with {placeholders} filled in.
+#let P = data.prose.cards
+#let fmt(s, ..vals) = {
+  let out = s
+  for (k, v) in vals.named() { out = out.replace("{" + k + "}", str(v)) }
+  out.replace("{deadline}", data.wedding.deadline).replace("{location}", data.wedding.location)
+}
 #let ink = rgb(T.ink)
 #let muted = rgb(T.muted)
 #let accent = rgb(T.accent)

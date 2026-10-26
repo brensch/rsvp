@@ -36,7 +36,8 @@
     let session = newSession(), timer = null, items = [], active = -1, seq = 0, searchWorks = true;
     const backWrap = form.querySelector(".addr-back-wrap");
 
-    function mode(m) {
+    // `focus` only when the guest asked for it: focusing on page load scrolls the page down.
+    function mode(m, focus = false) {
       box.hidden = m === "manual";
       manual.hidden = m !== "manual";
       unit.hidden = m === "search";
@@ -45,7 +46,7 @@
       box.querySelector(".addr-manual").parentElement.hidden = m === "picked";
       backWrap.hidden = !(m === "manual" && searchWorks);
       if (m !== "picked") pickedFlag.value = "";
-      if (m === "search") { input.value = ""; input.focus(); }
+      if (m === "search") { input.value = ""; if (focus) input.focus(); }
     }
     function currentLines() {
       const loc = [f("city").value, f("region").value, f("postcode").value].map((v) => v.trim()).filter(Boolean).join(" ");
@@ -100,13 +101,13 @@
         if (my !== seq || q !== input.value.trim()) return;
         if (d.available === false) { searchWorks = false; mode("manual"); return; }
         items = rank(q, d.suggestions || []); active = items.length ? 0 : -1;
-        status.textContent = items.length ? "" : "No matches yet. Keep typing, or enter it manually.";
+        status.textContent = items.length ? "" : status.dataset.noMatches;
         render();
-      } catch (_) { if (my === seq) status.textContent = "Search isn't working. You can enter it manually."; }
+      } catch (_) { if (my === seq) status.textContent = status.dataset.broken; }
     }
     async function choose(i) {
       const it = items[i]; if (!it) return;
-      close(); status.textContent = "Looking that up…";
+      close(); status.textContent = status.dataset.lookingUp;
       try {
         const r = await fetch(`${base}/place?id=${encodeURIComponent(it.id)}&s=${session}`, { credentials: "same-origin" });
         const d = await r.json();
@@ -123,7 +124,7 @@
         showPicked(d.lines);
         f("addr2").focus();
       } catch (_) {
-        status.textContent = "Couldn't look that one up. Please enter it manually.";
+        status.textContent = status.dataset.lookupFailed;
         mode("manual");
       }
     }
@@ -141,18 +142,18 @@
       else if (e.key === "Escape") close();
     });
     input.addEventListener("blur", () => setTimeout(close, 150));
-    box.querySelector(".addr-change").addEventListener("click", () => mode("search"));
+    box.querySelector(".addr-change").addEventListener("click", () => mode("search", true));
     box.querySelector(".addr-manual").addEventListener("click", () => { mode("manual"); f("addr1").focus(); });
-    form.querySelector(".addr-back").addEventListener("click", () => { status.textContent = ""; mode("search"); });
+    form.querySelector(".addr-back").addEventListener("click", () => { status.textContent = ""; mode("search", true); });
     form.addEventListener("submit", (e) => {
       if (!manual.hidden) return;
-      if (!f("addr1").value.trim()) { e.preventDefault(); status.textContent = "Pick your address from the list, or enter it manually."; input.focus(); }
+      if (!f("addr1").value.trim()) { e.preventDefault(); status.textContent = status.dataset.pick; input.focus(); }
     });
 
     const hadError = !!form.closest("section")?.querySelector(".notice.error");
     if (hadError) mode("manual");
     else if (f("addr1").value.trim()) showPicked(currentLines());
-    else { mode("search"); input.blur(); }
+    else mode("search");
   });
 
   // Address form: free-text country when "Somewhere else" is picked.

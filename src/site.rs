@@ -244,6 +244,12 @@ pub fn photos(c: &Connection) -> Result<Vec<Photo>> {
     Ok(st.query_map([], Photo::from_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// The photo shown on every invitation page (set from Gallery, or `rsvp photo add --home`).
+pub fn home_photo(c: &Connection) -> Result<Option<Photo>> {
+    let Some(id) = crate::store::setting(c, "home_photo")?.and_then(|v| v.parse::<i64>().ok()) else { return Ok(None) };
+    Ok(c.query_row("SELECT * FROM photos WHERE id = ?1 AND deleted_at IS NULL", [id], Photo::from_row).optional()?)
+}
+
 pub fn media_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("media")
 }

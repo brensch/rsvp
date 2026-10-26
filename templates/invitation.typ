@@ -20,7 +20,7 @@
     v(7mm)
     block(width: 88mm, {
       set par(leading: 0.6em)
-      text(font: display, style: "italic", size: 13pt)[request the pleasure of your company\ at the celebration of their marriage]
+      text(font: display, style: "italic", size: 13pt, P.invitation.request.trim())
     })
     v(7mm)
     diamond-rule(width: 36mm)
@@ -40,9 +40,9 @@
 #let back(it) = {
   frame(card-w, card-h)
   block(width: 100%, height: 100%, inset: (x: 15mm, top: 17mm, bottom: 15mm), align(center, {
-    caps("The details", size: 7pt, tracking: 0.42em)
+    caps(P.invitation.details, size: 7pt, tracking: 0.42em)
     v(3.5mm)
-    text(font: display, style: "italic", size: 19pt, fill: accent)[for #it.greeting]
+    text(font: display, style: "italic", size: 19pt, fill: accent, fmt(P.invitation.at("for"), greeting: it.greeting))
     v(1fr)
     for (i, e) in it.events.enumerate() {
       if i > 0 { v(5mm); thin-rule(width: 12mm); v(5mm) }
@@ -54,7 +54,7 @@
       v(1.8mm)
       text(font: display, size: 13pt, style: "italic", fill: accent)[#e.venue]
       if e.address != "" { v(1.2mm); text(size: 8.5pt, fill: muted, e.address) }
-      if e.dress != none { v(1.8mm); caps("Dress · " + e.dress, size: 6.5pt, fill: muted, tracking: 0.2em) }
+      if e.dress != none { v(1.8mm); caps(fmt(P.invitation.dress, dress: e.dress), size: 6.5pt, fill: muted, tracking: 0.2em) }
     }
     if it.note != none {
       v(6mm)
@@ -63,7 +63,7 @@
     v(1fr)
     diamond-rule(width: 30mm)
     v(5mm)
-    text(font: display, size: 13pt)[Kindly respond by #W.deadline]
+    text(font: display, size: 13pt, fmt(P.invitation.respond_by))
     v(4mm)
     qr(it, size: 24mm)
     v(2.5mm)

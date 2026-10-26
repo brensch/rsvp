@@ -138,7 +138,7 @@ pub fn parse(
     let events: Vec<_> = h.events.iter().filter_map(|e| cfg.event(e)).collect();
 
     for g in primary_guests(guests) {
-        let who = if g.unnamed_plus_one() { "your plus one".to_string() } else { g.first_name.clone() };
+        let who = if g.unnamed_plus_one() { cfg.prose.t("website.reply.your_plus_one") } else { g.first_name.clone() };
         let mut answers = BTreeMap::new();
         for ev in events.iter().filter(|e| e.dated() && g.invited(h, &e.slug)) {
             let key = field::att(g.id, &ev.slug);
@@ -146,7 +146,7 @@ pub fn parse(
                 Some("yes") => true,
                 Some("no") => false,
                 _ => {
-                    errors.insert(key, format!("Let us know if {who} can make the {}.", ev.name.to_lowercase()));
+                    errors.insert(key, cfg.prose.f("website.reply.error_attendance", &[("who", &who), ("event", &ev.name.to_lowercase())]));
                     continue;
                 }
             };
@@ -156,7 +156,7 @@ pub fn parse(
                 let mk = field::meal(g.id, &ev.slug);
                 meal = values.get(&mk).cloned().unwrap_or_default();
                 if !offered.iter().any(|m| m.slug == meal) {
-                    errors.insert(mk, format!("Choose a meal for {who}."));
+                    errors.insert(mk, cfg.prose.f("website.reply.error_meal", &[("who", &who)]));
                 }
             }
             answers.insert(ev.slug.clone(), EventAnswer { attending, meal });
@@ -170,7 +170,7 @@ pub fn parse(
             first_name = clip(values.get(&field::first(g.id)), 80);
             last_name = clip(values.get(&field::last(g.id)), 80);
             if first_name.is_empty() && answers.values().any(|a| a.attending) {
-                errors.insert(field::first(g.id), "What's your plus one's name?".into());
+                errors.insert(field::first(g.id), cfg.prose.t("website.reply.error_plus_one_name"));
             }
         }
         let name = if first_name.is_empty() { g.full_name() } else { format!("{first_name} {last_name}").trim().to_string() };

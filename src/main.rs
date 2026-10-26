@@ -8,6 +8,7 @@ mod email;
 mod gmail;
 mod journal;
 mod notify;
+mod prose;
 mod rsvp;
 mod site;
 mod store;

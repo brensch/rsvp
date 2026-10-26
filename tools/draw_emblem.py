@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw the wedding emblem: golden wattle (Australia) and olive (USA) rising from a ribbon bow
+"""Draw the wedding emblem: golden wattle (Australia) and California poppies (USA) rising from a ribbon bow
 into an open wreath, with room for the couple's initials in the middle.
 
     python3 tools/draw_emblem.py > templates/art/emblem.svg
@@ -21,14 +21,15 @@ GOLD = "#e3ac35"        # wattle balls
 GOLD_HI = "#f6d77e"
 GOLD_LO = "#c58d22"
 BUD = "#d9d595"         # unopened wattle buds
-STEM_O = "#7b6f57"      # olive wood, grey-brown
-LEAF_O = "#68744f"      # olive leaf top
-LEAF_O2 = "#a9b08f"     # olive leaf underside (silvery)
-OLIVE = "#3a2836"       # ripe olive, deep aubergine
-OLIVE_HI = "#7d5e74"
-OLIVE_G = "#7d8540"     # green olive
-RIBBON = "#c9a14f"
-RIBBON_D = "#a7823a"
+STEM_P = "#7d9585"      # poppy stems, glaucous blue-green
+FERN = "#7f9a8a"        # poppy foliage, finely divided
+FERN2 = "#a3b5a7"
+POPPY = "#ec8420"       # California poppy orange
+POPPY_LIGHT = "#f6b443"
+POPPY_DARK = "#d26614"
+POPPY_CENTRE = "#c58a1f"
+RIBBON = "#a0702f"     # bow: caramel brown, the darker shade of both the gold wattle and orange poppies
+RIBBON_D = "#6f4b1f"
 
 out = []
 
@@ -120,29 +121,75 @@ def bud(x, y, r):
     out.append(f'<circle cx="{f(x)}" cy="{f(y)}" r="{f(r)}" fill="{BUD}" stroke="#b9b56f" stroke-width="0.5"/>')
 
 
-def olive(x, y, size, ripe=True, lean=0.0):
-    """An olive hanging from (x, y): a short curved stalk, then an egg-shaped fruit (wider
-    at the bottom), a tiny cap where it joins, and a soft highlight."""
-    L = size * 1.25  # stalk
-    tx, ty = x + math.sin(lean) * L, y + math.cos(lean) * L
-    out.append(
-        f'<path d="M{f(x)},{f(y)} Q{f(x + math.sin(lean)*L*0.2 + lean*4)},{f(y + L*0.6)} {f(tx)},{f(ty)}" '
-        f'fill="none" stroke="{STEM_O}" stroke-width="0.9" stroke-linecap="round"/>'
+def petal(ang, length, width, fill, veins=True):
+    """One broad, fan-shaped poppy petal from the flower's centre, pointing along ang."""
+    L, Wd = length, width / 2
+    d = (
+        f"M0,0 C{f(L*0.2)},{f(-Wd*0.5)} {f(L*0.62)},{f(-Wd*1.08)} {f(L*0.92)},{f(-Wd*0.62)} "
+        f"Q{f(L*1.08)},0 {f(L*0.92)},{f(Wd*0.62)} C{f(L*0.62)},{f(Wd*1.08)} {f(L*0.2)},{f(Wd*0.5)} 0,0Z"
     )
-    rx, ry = size * 0.66, size
-    egg = (
-        f"M0,0 C{f(rx*0.75)},0 {f(rx*1.05)},{f(ry*0.9)} {f(rx*0.85)},{f(ry*1.45)} "
-        f"C{f(rx*0.6)},{f(ry*2.02)} {f(-rx*0.6)},{f(ry*2.02)} {f(-rx*0.85)},{f(ry*1.45)} "
-        f"C{f(-rx*1.05)},{f(ry*0.9)} {f(-rx*0.75)},0 0,0Z"
-    )
-    fill = "url(#olive)" if ripe else "url(#oliveg)"
-    out.append(
-        f'<g transform="translate({f(tx)},{f(ty)}) rotate({f(-math.degrees(lean) * 0.85)})">'
-        f'<path d="{egg}" fill="{fill}"/>'
-        f'<ellipse cx="0" cy="{f(ry*0.08)}" rx="{f(rx*0.32)}" ry="{f(ry*0.12)}" fill="{STEM_O}"/>'
-        f'<ellipse cx="{f(-rx*0.38)}" cy="{f(ry*0.8)}" rx="{f(rx*0.2)}" ry="{f(ry*0.36)}" fill="#ffffff" opacity="0.3"/>'
-        "</g>"
-    )
+    g = f'<g transform="rotate({f(math.degrees(ang))})"><path d="{d}" fill="{fill}"/>'
+    if veins:
+        for v in (-0.35, 0, 0.35):
+            g += f'<path d="M{f(L*0.15)},0 Q{f(L*0.55)},{f(v*Wd*0.6)} {f(L*0.85)},{f(v*Wd*1.0)}" fill="none" stroke="{POPPY_DARK}" stroke-width="0.5" opacity="0.45"/>'
+    out.append(g + "</g>")
+
+
+def poppy(x, y, size, facing):
+    """An open California poppy: four broad petals (the back pair a shade deeper), a golden
+    base, and a ring of stamens. `facing` tilts the flower toward its stalk's direction."""
+    out.append(f'<g transform="translate({f(x)},{f(y)}) rotate({f(math.degrees(facing))}) scale(1,0.86)">')
+    base = rnd.uniform(0, 0.4)
+    for j, k in enumerate((0, 2, 1, 3)):  # back pair first, front pair on top
+        a = base + k * math.pi / 2 + rnd.uniform(-0.12, 0.12)
+        petal(a, size * rnd.uniform(0.96, 1.06), size * 1.25, "url(#poppyBack)" if j < 2 else "url(#poppyFront)")
+    out.append(f'<circle r="{f(size*0.24)}" fill="{POPPY_CENTRE}"/>')
+    for j in range(12):
+        a = j / 12 * 2 * math.pi
+        out.append(f'<circle cx="{f(math.cos(a)*size*0.22)}" cy="{f(math.sin(a)*size*0.22)}" r="{f(size*0.06)}" fill="#f3cf6a"/>')
+    out.append("</g>")
+
+
+def poppy_bud(x, y, ang, size):
+    """A slender pointed bud, the orange petals just showing at the tip."""
+    L, Wd = size * 2.2, size * 0.55
+    d = f"M0,0 C{f(L*0.1)},{f(-Wd)} {f(L*0.7)},{f(-Wd*0.9)} {f(L)},0 C{f(L*0.7)},{f(Wd*0.9)} {f(L*0.1)},{f(Wd)} 0,0Z"
+    tip = f"M{f(L*0.62)},{f(-Wd*0.55)} Q{f(L*0.85)},{f(-Wd*0.3)} {f(L)},0 Q{f(L*0.85)},{f(Wd*0.3)} {f(L*0.62)},{f(Wd*0.55)} Q{f(L*0.7)},0 {f(L*0.62)},{f(-Wd*0.55)}Z"
+    out.append(f'<g transform="translate({f(x)},{f(y)}) rotate({f(math.degrees(ang))})"><path d="{d}" fill="{FERN}"/><path d="{tip}" fill="{POPPY}"/></g>')
+
+
+def fern(x, y, ang, length, color, bend=0.18):
+    """A finely divided poppy leaf: a gently curved stalk with fine, forked, curving segments."""
+    nx, ny = math.cos(ang + math.pi / 2), math.sin(ang + math.pi / 2)
+    ex, ey = x + math.cos(ang) * length, y + math.sin(ang) * length
+    cx, cy = x + math.cos(ang) * length * 0.5 + nx * length * bend, y + math.sin(ang) * length * 0.5 + ny * length * bend
+
+    def on(t):  # point and direction along the stalk (a quadratic curve)
+        px = (1 - t) ** 2 * x + 2 * (1 - t) * t * cx + t * t * ex
+        py = (1 - t) ** 2 * y + 2 * (1 - t) * t * cy + t * t * ey
+        dx = 2 * (1 - t) * (cx - x) + 2 * t * (ex - cx)
+        dy = 2 * (1 - t) * (cy - y) + 2 * t * (ey - cy)
+        return px, py, math.atan2(dy, dx)
+
+    def stroke(x0, y0, a, ln, w, curl):
+        x1, y1 = x0 + math.cos(a) * ln, y0 + math.sin(a) * ln
+        qx = x0 + math.cos(a) * ln * 0.5 + math.cos(a + math.pi / 2) * ln * curl
+        qy = y0 + math.sin(a) * ln * 0.5 + math.sin(a + math.pi / 2) * ln * curl
+        out.append(f'<path d="M{f(x0)},{f(y0)} Q{f(qx)},{f(qy)} {f(x1)},{f(y1)}" fill="none" stroke="{color}" stroke-width="{w}" stroke-linecap="round"/>')
+        return x1, y1
+
+    out.append(f'<path d="M{f(x)},{f(y)} Q{f(cx)},{f(cy)} {f(ex)},{f(ey)}" fill="none" stroke="{color}" stroke-width="1.0" stroke-linecap="round"/>')
+    for i in range(5):
+        t = 0.25 + 0.75 * i / 4
+        px, py, d = on(t)
+        seg = length * (0.42 - 0.22 * t)
+        for side in (-1, 1):
+            a = d + side * (0.8 - 0.3 * t)
+            qx, qy = stroke(px, py, a, seg, 0.95, side * 0.12)
+            for fork in (-0.45, 0.35):  # each segment splits into fine tips
+                stroke(qx, qy, a + side * fork, seg * 0.5, 0.75, side * 0.15)
+    px, py, d = on(1.0)
+    stroke(px, py, d, length * 0.18, 0.85, 0.1)
 
 
 # ---------------------------------------------------------------------------
@@ -212,45 +259,49 @@ def wattle():
         ball(x + dx, y + dy, r)
 
 
-def olive_branch():
+def poppies():
     p = arc("right")
-    tapered_stem(*p, 4.6, 1.3, STEM_O)
-    n = 15
-    nodes = []
+    tapered_stem(*p, 4.2, 1.3, STEM_P)
+    n = 14
+
+    def outward(x, y, a):
+        """The side normal that points away from the middle of the wreath."""
+        nrm = a + math.pi / 2
+        return nrm if math.cos(nrm) * (x - CX) + math.sin(nrm) * (y - 250) > 0 else nrm + math.pi
+
+    # feathery leaves all along, alternating sides
     for i in range(n):
-        t = 0.06 + 0.92 * i / (n - 1)
+        t = 0.06 + 0.9 * i / (n - 1)
         x, y = bez(*p, t)
         a = bez_tangent(*p, t)
-        nodes.append((i, t, x, y, a, 1 - t * 0.3))
-    # olive leaves come in opposite pairs, angled up toward the tip
-    for i, t, x, y, a, k in nodes:
-        for side in (-1, 1):
-            if i == n - 1 and side == 1:
-                continue
-            la = a + side * (0.6 + rnd.uniform(-0.08, 0.08))
-            leaf(x, y, la, 52 * k, 6.0 * k, LEAF_O, rib="#4f593b", curl=side * 0.04,
-                 under=LEAF_O2 if side == (1 if i % 2 else -1) else None)
-    # fruit on top of the leaves: one or two olives at most nodes,
-    # hanging down from the leaf joints, alternating outside and inside of the arc
-    for i, t, x, y, a, k in nodes:
-        if i in (0, n - 1) or i % 3 == 2:
-            continue
-        side = 1 if i % 2 else -1
-        ox, oy = x, y  # stalks start on the branch's centre line, so they always join it
-        # hang mostly downward, angled a little away from the branch so the fruit clears it
-        # (olive() measures `lean` from straight down)
-        n = a + side * math.pi / 2
-        hx, hy = math.cos(n), math.sin(n) + 1.6
-        lean = math.pi / 2 - math.atan2(hy, hx) + rnd.uniform(-0.1, 0.1)
-        if i % 4 == 0:  # a pair, fanned apart
-            olive(ox, oy, 8.6 * k, ripe=True, lean=lean + side * 0.45)
-            olive(ox, oy, 9.6 * k, ripe=True, lean=lean - side * 0.2)
-        else:
-            olive(ox, oy, 9.6 * k, ripe=(i % 4 != 1), lean=lean)
-    # tip: a final leaf pointing on
+        k = 1 - t * 0.3
+        o = outward(x, y, a)
+        side_ang = o if i % 2 == 0 else o + math.pi
+        fern(x, y, math.atan2(math.sin(side_ang) * 0.55 + math.sin(a) * 0.45, math.cos(side_ang) * 0.55 + math.cos(a) * 0.45),
+             34 * k, FERN if i % 2 else FERN2, bend=0.15 if i % 2 else -0.15)
+    def side_dir(x, y, a, outside, lean):
+        """Out from the stem on the outside or inside of the wreath, leaning toward the tip."""
+        n = outward(x, y, a) if outside else outward(x, y, a) + math.pi
+        return math.atan2(math.sin(n) * lean + math.sin(a) * (1 - lean), math.cos(n) * lean + math.cos(a) * (1 - lean))
+
+    # buds and flowers alternate sides: flowers outside, inside, outside...; each bud sits on
+    # the opposite side to the flowers around it
+    for j, t in enumerate((0.24, 0.45, 0.65, 0.84)):
+        x, y = bez(*p, t)
+        a = bez_tangent(*p, t)
+        (ex, ey), ea, _ = twig(x, y, side_dir(x, y, a, j % 2 == 0, 0.5), 14, 1.2, STEM_P, bend=0.2)
+        poppy_bud(ex, ey, ea, 8.5 * (1 - t * 0.25))
+    # flowers each on their own stalk, smaller toward the tip and a touch smaller inside the wreath
+    for j, (t, size) in enumerate(((0.12, 24), (0.33, 23), (0.54, 21), (0.74, 19), (0.93, 16))):
+        x, y = bez(*p, t)
+        a = bez_tangent(*p, t)
+        outside = j % 2 == 0
+        size = size if outside else size * 0.88
+        (ex, ey), ea, _ = twig(x, y, side_dir(x, y, a, outside, 0.6), 18 if outside else 14, 1.5, STEM_P, bend=-0.15 if outside else 0.15)
+        poppy(ex + math.cos(ea) * size * 0.3, ey + math.sin(ea) * size * 0.3, size, ea)
+    # tip: a last bud
     x, y = p[3]
-    a = bez_tangent(*p, 1)
-    leaf(x, y, a, 48, 6.0, LEAF_O, rib="#4f593b")
+    poppy_bud(x, y, bez_tangent(*p, 1), 7.5)
 
 
 def bow():
@@ -275,26 +326,27 @@ def bow():
         )
         out.append(
             f'<path d="M{f(x+s*44)},{f(y-20)} C{f(x+s*52)},{f(y-14)} {f(x+s*52)},{f(y-4)} {f(x+s*46)},{f(y+4)}" '
-            f'fill="none" stroke="#e6c77c" stroke-width="1.6" stroke-linecap="round" opacity="0.8"/>'
+            f'fill="none" stroke="#d4a764" stroke-width="1.6" stroke-linecap="round" opacity="0.8"/>'
         )
     # knot
     out.append(f'<ellipse cx="{f(x)}" cy="{f(y)}" rx="8" ry="7" fill="{RIBBON}" stroke="{RIBBON_D}" stroke-width="0.8"/>')
 
 
 wattle()
-olive_branch()
+poppies()
 bow()
 
 print(
     f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}">\n'
-    "<!-- Wedding emblem: golden wattle and olive. Drawn by tools/draw_emblem.py. -->\n"
+    "<!-- Wedding emblem: golden wattle and California poppies. Drawn by tools/draw_emblem.py. -->\n"
     "<defs>"
     f'<radialGradient id="wattle" cx="0.38" cy="0.35" r="0.7"><stop offset="0" stop-color="{GOLD_HI}"/><stop offset="0.55" stop-color="{GOLD}"/><stop offset="1" stop-color="{GOLD_LO}"/></radialGradient>'
-    f'<radialGradient id="olive" cx="0.35" cy="0.3" r="0.8"><stop offset="0" stop-color="{OLIVE_HI}"/><stop offset="1" stop-color="{OLIVE}"/></radialGradient>'
-    f'<radialGradient id="oliveg" cx="0.35" cy="0.3" r="0.8"><stop offset="0" stop-color="#aab06e"/><stop offset="1" stop-color="{OLIVE_G}"/></radialGradient>'
+    # California poppy petals: deep red-orange at the base, through orange, to golden tips
+    f'<linearGradient id="poppyFront" x1="0" y1="0" x2="1" y2="0"><stop offset="0.2" stop-color="#c23b16"/><stop offset="0.45" stop-color="#e5671c"/><stop offset="0.75" stop-color="#f29a2e"/><stop offset="1" stop-color="#fbd462"/></linearGradient>'
+    f'<linearGradient id="poppyBack" x1="0" y1="0" x2="1" y2="0"><stop offset="0.2" stop-color="#a93214"/><stop offset="0.5" stop-color="#d65a19"/><stop offset="0.8" stop-color="#ea8a2a"/><stop offset="1" stop-color="#f4bb4a"/></linearGradient>'
     "</defs>\n"
-    # Mirrored so the olive (USA) sits on the left under A for Alyssa, and the wattle
-    # (Australia) on the right under B for Brend.
+    # Mirrored so the poppies (USA) sit on the left under the American partner's initial, and the
+    # wattle (Australia) on the right under the Australian partner's.
     + f'<g transform="translate({W},0) scale(-1,1)">\n'
     + "\n".join(out)
     + "\n</g>\n</svg>"

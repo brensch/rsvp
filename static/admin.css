@@ -25,6 +25,8 @@
 }
 
 * { box-sizing: border-box; }
+/* Selected text in the theme brown */
+::selection { background: var(--accent); color: #fbf8f1; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 400 14.5px/1.5 var(--ui); -webkit-font-smoothing: antialiased; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }

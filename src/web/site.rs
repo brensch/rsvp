@@ -30,8 +30,8 @@ async fn household(st: &AppState, headers: &HeaderMap) -> anyhow::Result<Option<
 fn invite_only() -> Response {
     ui::error_page(
         StatusCode::FORBIDDEN,
-        "This page is for our guests",
-        "Please open the personal link or QR code from your invitation first. After that, this page will work on this device.",
+        &crate::prose::global().t("website.pages.guests_only_title"),
+        &crate::prose::global().t("website.pages.guests_only_text"),
     )
 }
 
@@ -47,10 +47,8 @@ async fn page(State(st): State<AppState>, Path(slug): Path<String>, headers: Hea
     let Some(page) = page.filter(|p| p.published && p.shown_to(h.australia)) else { return Ok(ui::not_found()) };
     let cfg = &st.cfg;
     let body = html! {
-        section.page-head {
-            h1.page-title { (page.title) }
-            div.rule { span {} i {} span {} }
-        }
+        // The menu already marks this page, so the title is for screen readers only.
+        h1.visually-hidden { (page.title) }
         @if !site::for_household(&page.body, h.australia).trim().is_empty() {
             article.prose { (PreEscaped(site::markdown(&site::for_household(&page.body, h.australia)))) }
         }
@@ -82,7 +80,7 @@ fn schedule(cfg: &crate::config::Config, h: &Household) -> Markup {
                                     @if let Some(end) = e.ends.as_deref().and_then(|x| crate::config::parse_local(x).ok()) { " – " (words::time_short(end)) }
                                 }
                             } @else {
-                                span.t-date { "Date to be announced" }
+                                span.t-date { (cfg.prose.t("website.events.date_tba")) }
                             }
                         }
                         div.timeline-what {
@@ -93,7 +91,7 @@ fn schedule(cfg: &crate::config::Config, h: &Household) -> Markup {
                                     a href=(e.map_url()) rel="noopener noreferrer" target="_blank" { (e.address) }
                                 }
                             }
-                            @if let Some(d) = &e.dress { p.t-dress { "Dress: " (d) } }
+                            @if let Some(d) = &e.dress { p.t-dress { (cfg.prose.f("website.events.dress", &[("dress", d)])) } }
                             @if let Some(n) = &e.note { p.t-note { (n) } }
                         }
                     }
@@ -106,7 +104,7 @@ fn schedule(cfg: &crate::config::Config, h: &Household) -> Markup {
 fn gallery(photos: &[Photo]) -> Markup {
     html! {
         @if photos.is_empty() {
-            p.center-text.muted { "Photos are coming soon." }
+            p.center-text.muted { (crate::prose::global().t("website.pages.photos_soon")) }
         } @else {
             div.gallery {
                 @for p in photos {

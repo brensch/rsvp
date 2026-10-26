@@ -1,0 +1,214 @@
+# Every sentence guests read: the website, emails, printed cards and form messages.
+#
+# Edit the wording here, not in the code. Your own copy lives next to wedding.toml (on the server:
+# /etc/rsvp/copy.yaml). Anything you leave out there falls back to this file.
+#
+# Placeholders in {braces} are filled in for you. Which ones work is noted beside each line:
+#   {names}     "Alex & Sam"           {a_first} {b_first}   first names
+#   {date}      "Saturday 12 June 2027" (long)   {date_medium} "12 June 2027"
+#   {location}  "Hobart, Tasmania"     {deadline}  RSVP-by date, "1 April 2027"
+#   {greeting}  the household, "Ben, Sarah & Tom"
+# **double stars** make words bold on the website.
+# A line break inside a "|" block becomes a line break on the card.
+
+# Short notes that print on cards and show on guest pages.
+notes:
+  save_the_date: "Formal invitation to follow"
+  # Shown to everyone on their page, the save the date card and in emails. Leave empty for none.
+  celebration: ""
+  # Shown only to households in Australia (cards and emails). Leave empty for none.
+  australia: ""
+
+website:
+  nav_invitation: "Invitation"
+  # A line at the bottom of every page, e.g. your wedding hashtag. Empty for none.
+  footer: ""
+  landing:
+    kicker: "By invitation"
+    text: "Please use the personal link or QR code from your card to view your invitation."
+  # Above the couple's names. Leave empty ("") to leave it out.
+  the_wedding_of: "The wedding of"
+  kicker_save_the_date: "Save the date"
+  kicker_invited: "You're invited"
+  salutation: "Dear {greeting},"
+  save_the_date:
+    - "We're getting married, and we would love to have you there."
+    - "Please save the date. A formal invitation will follow."
+  invited:
+    - "We would be honoured to have you celebrate with us. All the details are below."
+  rsvp_by: "Kindly let us know whether you can make it by **{deadline}**."
+  add_to_calendar: "Add to calendar"
+  # Under the button when the household's events changed since they last added them.
+  calendar_updated: "(updated since your last download)"
+  events:
+    title: "Events"
+    date_tba: "Date to be announced"
+    rsvp_when_set: "We'll ask for your RSVP once it's set."
+    dress: "Dress: {dress}"            # {dress}
+  reply:
+    title: "Your reply"
+    thanks_title: "Thank you, we've got your reply."
+    thanks_text: "You can come back to this page any time before {deadline} to make changes."
+    closed: "RSVPs are now closed. If something has changed, please get in touch with us directly."
+    received: "We received your reply on {when}. You can update it below."   # {when}
+    fix_first: "Just a couple of things before we can save this:"
+    accept: "Joyfully accepts"
+    decline: "Regretfully declines"
+    dinner: "Dinner"
+    plus_one_who: "Who are you bringing?"
+    first_name: "First name"
+    last_name: "Last name"
+    dietary: "Dietary requirements or allergies"
+    dietary_placeholder: "None"
+    extras_title: "A few extras"
+    song: "A song that will get you on the dance floor"
+    accommodation: "Accommodation"
+    accommodation_options:
+      "": "Choose one"
+      sorted: "We've sorted our own"
+      need-help: "We'd love recommendations"
+      local: "We live locally"
+    transport_options:
+      "yes": "Yes please"
+      "no": "No thanks"
+    message: "A note for us"
+    send: "Send our reply"
+    update: "Update our reply"
+    none_received: "We didn't receive a reply from you."
+    attending: "attending"
+    not_attending: "not attending"
+    no_reply: "no reply"
+    # Shown next to the field that needs fixing.
+    error_attendance: "Let us know if {who} can make the {event}."   # {who} {event}
+    error_meal: "Choose a meal for {who}."                          # {who}
+    error_plus_one_name: "What's your plus one's name?"
+    your_plus_one: "your plus one"
+  address:
+    title: "Your address"
+    ask: "Please fill out your address so we can send you a formal invitation."
+    thanks: "Thank you, we've got your address."
+    sending_to: "We'll send your formal invitation to:"
+    update: "Not right? Update it"
+    save: "Save address"
+    search_label: "Search for your address"
+    search_placeholder: "Start typing your street address…"
+    change: "Change"
+    manual: "Can't find it? Enter it manually"
+    back_to_search: "← Search for my address instead"
+    unit: "Apartment, unit, suite"
+    optional: "(optional)"
+    street: "Street address"
+    city: "City / suburb"
+    state: "State"
+    postcode: "ZIP / postcode"
+    country: "Country"
+    country_other: "Somewhere else"
+    which_version: "We checked your address with the postal service. Which version should we use?"
+    which_unit: "That building has several units. Is there an apartment or unit number? Otherwise, which version should we use?"
+    suggested: "Suggested"
+    as_typed: "As you typed it"
+    not_found: "We couldn't find that address."
+    not_confirmed: "We couldn't confirm: {parts}."   # {parts}
+    missing: "It seems to be missing: {parts}."       # {parts}
+    edit: "Edit address"
+    keep: "It's correct, save it"
+    update_and_save: "Update the address below and save it again."
+    need_street: "Please enter your street address."
+    need_city: "Please enter your city or suburb."
+    need_country: "Please choose your country."
+    too_long: "That's a very long address. Please shorten it."
+    # While searching (shown under the search box).
+    search_no_matches: "No matches yet. Keep typing, or enter it manually."
+    search_broken: "Search isn't working. You can enter it manually."
+    search_looking_up: "Looking that up…"
+    search_lookup_failed: "Couldn't look that one up. Please enter it manually."
+    search_pick: "Pick your address from the list, or enter it manually."
+  pages:
+    guests_only_title: "This page is for our guests"
+    guests_only_text: "Please open the personal link or QR code from your invitation first. After that, this page will work on this device."
+    photos_soon: "Photos are coming soon."
+  errors:
+    not_found_title: "We couldn't find that page"
+    not_found_text: "If you followed a link from your invitation, check that it was copied in full, or get in touch with us and we'll send you a fresh one."
+    form_too_large_title: "That didn't work"
+    form_too_large_text: "The form was too large."
+    rsvp_failed_title: "We couldn't save your reply"
+    rsvp_failed_text: "Sorry, something went wrong saving your RSVP. Please go back and try again in a minute, or let us know directly."
+    address_failed_title: "We couldn't save your address"
+    address_failed_text: "Sorry, please go back and try again in a minute, or send it to us directly."
+
+email:
+  # Laid out like the save the date page (kicker, names, date, place), then this one sentence
+  # and the button. "The wedding of" comes from website.the_wedding_of.
+  save_the_date:
+    subject: "Save the date: {names}, {date_medium}"
+    kicker: "Save the date"
+    text: ""   # an optional sentence above the button; empty for none
+    button: "More details"
+  invitation:
+    subject: "You're invited: {names}"
+    kicker: "You're invited"
+    text: "Your invitation is here, with everything you need. Please let us know if you can come by {deadline}."
+    button: "View invitation & RSVP"
+
+cards:
+  save_the_date:
+    kicker: "Save the date"
+    the_wedding_of: "The wedding of"   # above the names; "" to leave it out
+    and: "and"
+    salutation: "Dear {greeting},"
+    message: |
+      We're getting married,
+      and we would love you to be there.
+    when: "When"
+    where: "Where"
+    scan: "Scan for details & to RSVP"
+  invitation:
+    request: |
+      request the pleasure of your company
+      at the celebration of their marriage
+    details: "The details"
+    for: "for {greeting}"
+    dress: "Dress · {dress}"            # {dress}
+    respond_by: "Kindly respond by {deadline}"
+
+privacy:
+  title: "Privacy"
+  # Markdown. {names} works here.
+  body: |
+    This website is for guests of {names}'s wedding. It is run by the two of us, not by a company.
+
+    ## What we keep
+
+    - The names of the people we've invited, grouped by household.
+    - Email addresses, so we can send save the dates and invitations.
+    - Postal addresses you give us, so we can post your invitation.
+    - Your replies: who can come, meal choices, dietary needs and any notes you leave us.
+    - When your invitation link was opened, when an email from us was opened, and when you added the events to your calendar, so we know who has seen what.
+
+    ## How we use it
+
+    Only to organise the wedding and the events around it, and to keep in touch with you about them. We don't sell or share it, and we don't use it for advertising.
+
+    ## Who can see it
+
+    Just the two of us and a few family members helping with planning. Your personal link only shows your own household's details, so please don't share it.
+
+    ## Email and Google
+
+    We send our emails through our own Gmail account. This website has permission only to send email from that account: it cannot read, change or delete anything in it. Use of information received from Google APIs adheres to the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy), including the Limited Use requirements.
+
+    Address search on the RSVP page uses Google's address service; what you type there is sent to Google to find matching addresses.
+
+    ## How long we keep it
+
+    Until after the wedding celebrations, then we delete it.
+
+    ## Questions or removal
+
+    Email us at us (see your invitation) and we'll answer, correct or delete your details.
+
+hashtag:
+  title: ""
+  # Markdown. Shown at /hashtag when someone taps the footer line. Empty title: the footer isn't a link.
+  body: ""

@@ -62,6 +62,15 @@ pub enum Cmd {
     },
     /// Show configured events and meals (valid slugs)
     Events,
+    /// Add a photo to the gallery (location and camera details are stripped)
+    Photo {
+        file: std::path::PathBuf,
+        #[arg(long, default_value = "")]
+        caption: String,
+        /// Also show it on every invitation page
+        #[arg(long)]
+        home: bool,
+    },
     /// Render stationery to a file
     Render(RenderArgs),
     /// Take a backup snapshot now
@@ -254,6 +263,20 @@ pub fn run_sync(cli: Cli) -> Result<()> {
             None => println!("{}", db.with(|c| store::phase(c))?.as_str()),
         },
         Cmd::Events => print(&json!({"events": cfg.events, "meals": cfg.meals})),
+        Cmd::Photo { file, caption, home } => {
+            let bytes = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+            let (stem, w, h) = crate::site::process_photo(&cli.data, &bytes)?;
+            let id = db.with(|c| {
+                let tx = crate::db::begin(c)?;
+                let id = crate::site::add_photo(&tx, &who, &stem, w, h, &caption)?;
+                if home {
+                    store::set_setting(&tx, &who, "home_photo", &id.to_string())?;
+                }
+                tx.commit()?;
+                Ok(id)
+            })?;
+            print(&json!({"photo": id, "width": w, "height": h, "on_invitation_page": home}));
+        }
         Cmd::Household(cmd) => household(&db, &cfg, &cli.data, &who, &events, &defaults, cmd)?,
         Cmd::Guest(cmd) => match cmd {
             GuestCmd::Add { household, json } => {

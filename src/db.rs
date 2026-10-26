@@ -370,6 +370,17 @@ const MIGRATIONS: &[&str] = &[
         WHERE slug = 'travel' AND EXISTS (SELECT 1 FROM pages WHERE slug = 'travel-from-australia');
     DELETE FROM pages WHERE slug = 'travel-from-australia';
     "#,
+    // 18: each "Add to calendar" download, with the version of every event it contained, so we
+    // can tell a household when their calendar copy is out of date.
+    r#"
+    CREATE TABLE calendar_downloads (
+        id           INTEGER PRIMARY KEY,
+        household_id INTEGER NOT NULL REFERENCES households(id),
+        at           TEXT NOT NULL,
+        sequences    TEXT NOT NULL DEFAULT '{}'   -- {"wedding": 2, ...}
+    ) STRICT;
+    CREATE INDEX calendar_downloads_household ON calendar_downloads(household_id, at);
+    "#,
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {

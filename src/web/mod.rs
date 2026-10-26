@@ -25,6 +25,7 @@ use crate::assets::Renderer;
 use crate::config::{Config, Env};
 use crate::db::Db;
 use crate::journal::Journal;
+use crate::store;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -37,6 +38,8 @@ pub struct AppState {
     pub ceremonies: Arc<Mutex<HashMap<String, (Instant, auth::Ceremony)>>>,
     pub limiter: Arc<RateLimiter>,
     pub http: reqwest::Client,
+    /// Calendar SEQUENCE per event slug (see store::calendar_sequences).
+    pub ics_sequence: Arc<HashMap<String, i64>>,
 }
 
 impl AppState {
@@ -44,6 +47,7 @@ impl AppState {
         let origin = Url::parse(&cfg.site.base_url)?;
         let webauthn = WebauthnBuilder::new(&cfg.site.rp_id, &origin)?.rp_name(&cfg.title()).build()?;
         let renderer = Renderer::new(&env.data_dir);
+        let ics_sequence = db.with(|c| crate::store::calendar_sequences(c, &cfg.events))?;
         Ok(Self {
             journal: Journal::new(env.journal_path()),
             cfg: Arc::new(cfg),
@@ -54,6 +58,7 @@ impl AppState {
             ceremonies: Arc::new(Mutex::new(HashMap::new())),
             limiter: Arc::new(RateLimiter::default()),
             http: reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?,
+            ics_sequence: Arc::new(ics_sequence),
         })
     }
 }
@@ -134,6 +139,9 @@ async fn guard(State(st): State<AppState>, req: Request, next: Next) -> Response
     let mut req = req;
     req.extensions_mut().insert(ClientIp(ip.clone()));
     let resp = next.run(req).await;
+    if resp.status().is_server_error() {
+        report_server_error(&st, &path, resp.status(), resp.extensions().get::<ServerError>().cloned());
+    }
 
     if path.starts_with("/i/") && resp.status() == StatusCode::NOT_FOUND {
         // Unknown guest token: count toward a lockout (15 misses / ~15 min).
@@ -202,7 +210,8 @@ fn with_headers(mut resp: Response, path: &str) -> Response {
     set(h, "referrer-policy", "same-origin");
     set(h, "permissions-policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()");
     set(h, "cross-origin-opener-policy", "same-origin");
-    set(h, "cross-origin-resource-policy", "same-origin");
+    // The picture in our emails is shown inside other sites (webmail), so it alone may be embedded.
+    set(h, "cross-origin-resource-policy", if path.starts_with("/e/") { "cross-origin" } else { "same-origin" });
     set(h, "strict-transport-security", "max-age=63072000; includeSubDomains");
     set(h, "x-robots-tag", "noindex, nofollow, noarchive");
     if path.starts_with("/admin") {
@@ -269,16 +278,62 @@ impl<E: Into<anyhow::Error>> From<E> for AppError {
     }
 }
 
+/// Carried on a 5xx response so `guard` can alert Discord and write the audit log.
+#[derive(Clone)]
+struct ServerError {
+    id: String,
+    message: String,
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
         tracing::error!(error = ?self.0, error_id = %id, "request failed");
-        ui::error_page(
+        let mut resp = ui::error_page(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Something went wrong",
             &format!("Sorry, something went wrong on our side. Please try again in a moment. (ref {id})"),
-        )
+        );
+        resp.extensions_mut().insert(ServerError { id, message: format!("{:#}", self.0) });
+        resp
     }
+}
+
+/// Any server error someone saw: post to Discord and write the audit log. The same error on the
+/// same page is reported at most once every 10 minutes. Guest links in the path are hidden.
+fn report_server_error(st: &AppState, path: &str, status: StatusCode, err: Option<ServerError>) {
+    static RECENT: std::sync::LazyLock<Mutex<HashMap<String, Instant>>> = std::sync::LazyLock::new(Default::default);
+    let shown = match path.strip_prefix("/i/") {
+        Some(rest) => format!("/i/…{}", rest.find('/').map(|i| &rest[i..]).unwrap_or("")),
+        None => path.to_string(),
+    };
+    let (id, message) = err.map(|e| (e.id, e.message)).unwrap_or_else(|| (String::new(), status.to_string()));
+    let message: String = message.chars().take(400).collect();
+    {
+        let mut recent = RECENT.lock().unwrap_or_else(|p| p.into_inner());
+        let key = format!("{shown}|{message}");
+        if recent.get(&key).is_some_and(|t| t.elapsed() < Duration::from_secs(600)) {
+            return;
+        }
+        recent.retain(|_, t| t.elapsed() < Duration::from_secs(600));
+        recent.insert(key, Instant::now());
+    }
+    let base = st.cfg.site.base_url.clone();
+    let db = st.db.clone();
+    tokio::spawn(async move {
+        let text = format!("🚨 Server error {} on {shown}{}\n{message}\n{base}/admin/audit", status.as_u16(), if id.is_empty() { String::new() } else { format!(" (ref {id})") });
+        let res = db
+            .call(move |c| {
+                let tx = crate::db::begin(c)?;
+                store::audit(&tx, "system", "server.error", "request", &shown, &serde_json::json!({"status": status.as_u16(), "ref": id, "error": message}))?;
+                store::enqueue(&tx, "discord", &serde_json::json!({"type": "alert", "text": text}))?;
+                tx.commit()
+            })
+            .await;
+        if let Err(e) = res {
+            tracing::error!(error = ?e, "couldn't record server error");
+        }
+    });
 }
 
 pub type AppResult<T = Response> = Result<T, AppError>;

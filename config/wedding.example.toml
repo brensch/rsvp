@@ -14,10 +14,8 @@ date = "2027-06-12"
 location = "Hobart, Tasmania"
 utc_offset = "+10:00"         # venue time zone offset (for calendar files + deadline)
 rsvp_deadline = "2027-04-01"
-save_the_date_note = "Formal invitation to follow"
 return_address = ["Alex Morgan & Sam Rivera", "12 Example Street", "Hobart TAS 7000"]
 # One line printed on Australia-based households' cards and emails (optional).
-# australia_note = "Travelling from overseas? Your page has flights and visa details."
 
 [[wedding.info]]
 title = "Getting there"

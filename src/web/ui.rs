@@ -93,6 +93,15 @@ pub fn guest_page(cfg: &Config, title: &str, nav: Option<&GuestNav>, body: Marku
         html lang="en" {
             head { (head(title, "site.css")) }
             body.guest {
+                // A quiet strip of links at the very top, then the emblem as the crest.
+                @if let Some(n) = nav.filter(|n| !n.pages.is_empty()) {
+                    nav.site-nav aria-label="Wedding website" {
+                        a href=(n.home) aria-current=[(n.active == "home").then_some("page")] { (cfg.prose.t("website.nav_invitation")) }
+                        @for (slug, title) in &n.pages {
+                            a href={ "/" (slug) } aria-current=[(n.active == *slug).then_some("page")] { (title) }
+                        }
+                    }
+                }
                 header.site-head {
                     a.monogram href=(nav.map(|n| n.home.as_str()).unwrap_or("/")) aria-label="Home" {
                         (PreEscaped(EMBLEM_SVG.as_str()))
@@ -101,15 +110,14 @@ pub fn guest_page(cfg: &Config, title: &str, nav: Option<&GuestNav>, body: Marku
                         }
                     }
                 }
-                @if let Some(n) = nav.filter(|n| !n.pages.is_empty()) {
-                    nav.site-nav aria-label="Wedding website" {
-                        a href=(n.home) aria-current=[(n.active == "home").then_some("page")] { "Invitation" }
-                        @for (slug, title) in &n.pages {
-                            a href={ "/" (slug) } aria-current=[(n.active == *slug).then_some("page")] { (title) }
-                        }
+                main { (body) }
+                @if let Some(f) = cfg.prose.opt("website.footer") {
+                    footer.site-foot {
+                        div.rule.full aria-hidden="true" { span {} i {} span {} }
+                        // The footer line links to its explanation when copy.yaml has one.
+                        p { @if cfg.prose.opt("hashtag.title").is_some() { a href="/hashtag" { (f) } } @else { (f) } }
                     }
                 }
-                main { (body) }
                 script src=(asset("guest.js")) defer {}
             }
         }
@@ -216,8 +224,8 @@ pub fn error_page(status: StatusCode, title: &str, message: &str) -> Response {
 pub fn not_found() -> Response {
     error_page(
         StatusCode::NOT_FOUND,
-        "We couldn't find that page",
-        "If you followed a link from your invitation, check that it was copied in full, or get in touch with us and we'll send you a fresh one.",
+        &crate::prose::global().t("website.errors.not_found_title"),
+        &crate::prose::global().t("website.errors.not_found_text"),
     )
 }
 

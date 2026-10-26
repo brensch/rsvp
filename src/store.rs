@@ -57,7 +57,7 @@ pub struct Household {
     /// Someone confirmed the names and details are all correct.
     pub checked_at: Option<String>,
     pub checked_by: Option<String>,
-    /// Who put this household on the list, e.g. "Brend" or "Julie (Alyssa's parent)".
+    /// Who put this household on the list, e.g. "Sam" or "Jo (Alex's parent)".
     pub added_by: String,
     /// "" for normal households; "pending" while a helper's request awaits approval.
     pub request_status: String,
@@ -495,6 +495,82 @@ pub fn mark_sent(conn: &Connection, id: i64, which: &str) -> Result<()> {
     };
     conn.execute(&format!("UPDATE households SET {col} = ?1 WHERE id = ?2"), params![now(), id])?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Calendar versions
+
+/// The iCalendar SEQUENCE for each event: it goes up by one whenever the event's details
+/// (time, place, dress, notes) change, so calendars that see the event again update it in
+/// place rather than keeping the old one. Stored as "seq:fingerprint" in settings.
+pub fn calendar_sequences(conn: &Connection, events: &[crate::config::Event]) -> Result<HashMap<String, i64>> {
+    let mut out = HashMap::new();
+    for e in events {
+        let fp = tokens::sha256_hex(&format!(
+            "{}|{:?}|{:?}|{}|{}|{:?}|{:?}",
+            e.name, e.starts, e.ends, e.venue, e.address, e.dress, e.note
+        ))[..16]
+            .to_string();
+        let key = format!("ics_sequence:{}", e.slug);
+        let stored = setting(conn, &key)?;
+        let (seq, old_fp) = stored
+            .as_deref()
+            .and_then(|v| v.split_once(':'))
+            .map(|(n, f)| (n.parse::<i64>().unwrap_or(0), f.to_string()))
+            .unwrap_or((0, String::new()));
+        let seq = if stored.is_none() {
+            0
+        } else if old_fp == fp {
+            seq
+        } else {
+            seq + 1
+        };
+        if old_fp != fp {
+            set_setting(conn, "system", &key, &format!("{seq}:{fp}"))?;
+        }
+        out.insert(e.slug.clone(), seq);
+    }
+    Ok(out)
+}
+
+/// Record an "Add to calendar" download and which version of each event it held.
+pub fn record_calendar_download(conn: &Connection, household_id: i64, sequences: &BTreeMap<String, i64>) -> Result<()> {
+    conn.execute(
+        "INSERT INTO calendar_downloads (household_id, at, sequences) VALUES (?1, ?2, ?3)",
+        params![household_id, now(), serde_json::to_string(sequences)?],
+    )?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CalendarDownloads {
+    pub count: i64,
+    pub last_at: Option<String>,
+    /// Event versions in the latest download.
+    pub last: BTreeMap<String, i64>,
+}
+
+pub fn calendar_downloads(conn: &Connection, household_id: i64) -> Result<CalendarDownloads> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM calendar_downloads WHERE household_id = ?1", [household_id], |r| r.get(0))?;
+    let last: Option<(String, String)> = conn
+        .query_row(
+            "SELECT at, sequences FROM calendar_downloads WHERE household_id = ?1 ORDER BY at DESC, id DESC LIMIT 1",
+            [household_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(CalendarDownloads {
+        count,
+        last: last.as_ref().and_then(|(_, s)| serde_json::from_str(s).ok()).unwrap_or_default(),
+        last_at: last.map(|(at, _)| at),
+    })
+}
+
+/// When each household last added its events to a calendar.
+pub fn calendar_last_downloads(conn: &Connection) -> Result<HashMap<i64, String>> {
+    let mut st = conn.prepare("SELECT household_id, MAX(at) FROM calendar_downloads GROUP BY household_id")?;
+    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<HashMap<_, _>>>()?;
+    Ok(rows)
 }
 
 // ---------------------------------------------------------------------------
@@ -1228,6 +1304,25 @@ pub mod tests {
     pub fn mem() -> crate::db::Db {
         let dir = std::env::temp_dir().join(format!("rsvp-test-{}", uuid::Uuid::new_v4()));
         crate::db::Db::open(&dir.join("t.db")).unwrap()
+    }
+
+    #[test]
+    fn calendar_sequence_goes_up_only_when_an_event_changes() {
+        let db = mem();
+        db.with(|c| {
+            let cfg: crate::config::Config = toml::from_str(include_str!("../config/wedding.example.toml")).unwrap();
+            let mut events = cfg.events.clone();
+            let slug = events[0].slug.clone();
+            assert_eq!(calendar_sequences(c, &events)?[&slug], 0);
+            assert_eq!(calendar_sequences(c, &events)?[&slug], 0, "unchanged: same number");
+            events[0].venue = "Somewhere new".into();
+            assert_eq!(calendar_sequences(c, &events)?[&slug], 1);
+            assert_eq!(calendar_sequences(c, &events)?[&slug], 1);
+            events[0].starts = Some("2027-06-12T16:00".into());
+            assert_eq!(calendar_sequences(c, &events)?[&slug], 2);
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

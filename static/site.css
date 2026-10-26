@@ -6,8 +6,8 @@
 
 :root {
   --ink: #24211d;
-  --muted: #6f675c;
-  --accent: #8c6a3f;
+  --muted: #574f45;
+  --accent: #7a5a30;
   --paper: #fbf8f1;
   --card: #fffdf8;
   --rule: #c9b99a;
@@ -18,67 +18,90 @@
 }
 
 * { box-sizing: border-box; }
+/* Selected text in the theme brown */
+::selection { background: var(--accent); color: #fbf8f1; }
+/* No blue flash or box when tapping links and buttons on phones; tapped links get a quiet colour
+   change instead. Keyboard users still get a visible focus ring (focus-visible). */
+html { -webkit-tap-highlight-color: transparent; }
+a:focus:not(:focus-visible), button:focus:not(:focus-visible) { outline: none; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.site-nav a:active, .monogram:active { color: var(--accent); opacity: .8; }
 /* Always reserve the scrollbar's space so short and long pages share the same centre. */
-html { -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
+/* Text grows with the screen: 18px on phones up to 22px on big screens. Everything sized in
+   rem follows, so the whole page scales. Kept large for guests who don't see well. */
+html { -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; font-size: clamp(18px, 15px + 0.45vw, 22px); }
 body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font: 400 1.125rem/1.6 var(--serif);
+  font: 400 1.12rem/1.65 var(--serif);
   font-variant-numeric: oldstyle-nums;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-main { max-width: 760px; margin: 0 auto; padding: 0 16px 64px; }
+main { max-width: 44rem; margin: 0 auto; padding: 0 16px 64px; }
 a { color: var(--accent); text-underline-offset: 3px; }
 strong { font-weight: 600; }
 
-.site-head { display: flex; justify-content: center; padding: 40px 16px 0; }
-.monogram { position: relative; width: 220px; aspect-ratio: 600 / 520; text-decoration: none; }
+.site-head { display: flex; justify-content: center; padding: 30px 16px 0; }
+.monogram { position: relative; width: clamp(200px, 17vw, 300px); aspect-ratio: 600 / 520; text-decoration: none; container-type: inline-size; }
 .monogram svg { display: block; width: 100%; height: 100%; }
-.monogram .initials { position: absolute; left: 0; right: 0; top: 29%; text-align: center; font: italic 400 48px/1 var(--display); color: var(--ink); }
-.monogram .initials .amp { font-size: 30px; color: var(--accent); margin: 0 0.04em; }
+.monogram .initials { position: absolute; left: 0; right: 0; top: 29%; text-align: center; font: italic 400 22cqi/1 var(--display); color: var(--ink); }
+.monogram .initials .amp { font-size: .62em; color: var(--accent); margin: 0 0.04em; }
 
 /* Hero */
 .hero { text-align: center; padding: 28px 0 40px; }
-.hero .kicker { font-size: 1.2rem; letter-spacing: .34em; margin-bottom: 26px; }
+.hero .kicker { font-size: 1.25rem; letter-spacing: .3em; margin-bottom: 26px; }
 .kicker {
-  font: 500 .78rem/1 var(--serif);
-  letter-spacing: .38em;
+  font: 500 .9rem/1.2 var(--serif);
+  letter-spacing: .3em;
   text-transform: uppercase;
   color: var(--accent);
   margin: 0 0 22px;
 }
+/* "The wedding of": the same italic as the place line, quiet, just above the names */
+.wedding-of { font: italic 400 1.45rem/1.2 var(--display); color: var(--muted); margin: 0 0 10px; }
+/* "Alyssa & Brendan" always on one line: the size follows the screen width so it fits a phone,
+   up to a maximum on big screens. */
 .names {
-  font: 300 clamp(3.2rem, 13vw, 5.6rem)/0.95 var(--display);
+  font: 300 min(5.4rem, 12.2vw)/1.05 var(--display);
   margin: 0;
   letter-spacing: .005em;
+  white-space: nowrap;
 }
 .names .amp {
-  display: block;
-  font: italic 400 .48em/1.2 var(--display);
+  display: inline;
+  font: italic 400 .62em/1 var(--display);
   color: var(--accent);
-  margin: .12em 0 .05em;
+  margin: 0 .2em;
+  vertical-align: .08em;
 }
 .rule { display: flex; align-items: center; gap: 12px; width: min(260px, 70%); margin: 30px auto 22px; }
 .rule span { flex: 1; height: 1px; background: var(--rule); }
 .rule i { width: 7px; height: 7px; background: var(--accent); transform: rotate(45deg); }
-.date { font-size: .95rem; letter-spacing: .26em; text-transform: uppercase; margin: 0 0 6px; font-variant-numeric: lining-nums; }
-.place { font: italic 400 1.35rem/1.3 var(--display); color: var(--muted); margin: 0; }
-.lede { font: italic 400 1.3rem/1.5 var(--display); color: var(--muted); max-width: 32em; margin: 18px auto 0; }
+/* The same line-and-diamond, across the full width, between the page's sections. */
+.rule.full { width: 100%; margin: 60px auto 30px; }
+.date { font-size: min(1.45rem, 6.2vw); white-space: nowrap; letter-spacing: .2em; text-transform: uppercase; margin: 0 0 6px; font-variant-numeric: lining-nums; }
+.place { font: italic 400 1.5rem/1.3 var(--display); color: var(--muted); margin: 0; }
+.lede { font: italic 400 1.4rem/1.5 var(--display); color: var(--muted); max-width: 32em; margin: 18px auto 0; }
 
 /* Letter */
 .letter { text-align: center; max-width: 34em; margin: 0 auto 48px; }
+/* The photo on the invitation page, framed like a print */
+.home-photo { margin: 36px auto 0; width: min(24rem, 100%); }
+.home-photo img { display: block; width: 100%; height: auto; padding: 10px; background: var(--card); border: 1px solid var(--rule); box-shadow: 0 12px 34px rgba(36, 33, 29, .12); }
+.home-photo figcaption { font: italic 400 1.15rem/1.4 var(--display); color: var(--muted); text-align: center; margin-top: 12px; }
 .salutation { font: italic 400 2rem/1.25 var(--display); color: var(--accent); margin: 0 0 14px; }
-.letter p { margin: 0 0 12px; }
-.letter p.celebration { font-family: var(--display); font-style: italic; font-size: 1.15rem; color: var(--muted); margin-top: 18px; }
+.letter p { margin: 0 0 12px; font-size: 1.18rem; }
+.letter p.salutation { font-size: 2.1rem; line-height: 1.25; }
+.letter p.celebration { font-family: var(--display); font-style: italic; font-size: 1.3rem; line-height: 1.45; color: var(--muted); margin-top: 18px; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 26px; }
 
 /* Buttons */
 .button {
   display: inline-flex; align-items: center; justify-content: center;
-  min-height: 46px; padding: 0 24px;
-  font: 500 .82rem/1 var(--serif); letter-spacing: .2em; text-transform: uppercase;
+  min-height: 52px; padding: 0 26px;
+  font: 500 .95rem/1.2 var(--serif); letter-spacing: .16em; text-transform: uppercase;
   text-decoration: none; cursor: pointer;
   border: 1px solid var(--ink); border-radius: 1px;
   background: transparent; color: var(--ink);
@@ -88,16 +111,17 @@ strong { font-weight: 600; }
 .button.primary { background: var(--ink); color: var(--paper); }
 .button.primary:hover { background: #000; }
 .button.ghost { border-color: var(--rule); }
+/* "Add to calendar": solid brown, the site's accent (and the bow's colour) */
+.actions .button { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+.actions .button:hover { background: #5f4524; border-color: #5f4524; }
+.button.has-note { flex-direction: column; gap: 6px; padding-top: 12px; padding-bottom: 12px; }
+.button-note { font: italic 400 1.05rem/1.2 var(--display); letter-spacing: 0; text-transform: none; opacity: .92; }
 .button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .choice input:focus-visible + span, .meal input:focus-visible + span {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 
 /* Section titles */
-.section-title {
-  text-align: center; font: 400 2rem/1.2 var(--display); margin: 0 0 28px;
-  display: flex; align-items: center; gap: 18px;
-}
-.section-title::before, .section-title::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+.section-title { text-align: center; font: 400 2.1rem/1.2 var(--display); margin: 0 0 24px; }
 
 /* Events */
 .events { margin: 0 0 56px; }
@@ -111,10 +135,10 @@ strong { font-weight: 600; }
 .event-when { font: 400 1.25rem/1.3 var(--display); }
 .event-time { color: var(--muted); font-variant-numeric: lining-nums; margin-bottom: 10px !important; }
 .event-venue { font: italic 500 1.25rem/1.3 var(--display); color: var(--accent); }
-.event-address { font-size: .95rem; }
+.event-address { font-size: 1rem; }
 .event-address a { color: var(--muted); }
-.event-dress { font-size: .78rem; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); margin-top: 10px !important; }
-.event-note { font-size: .95rem; color: var(--muted); margin-top: 8px !important; }
+.event-dress { font-size: .9rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-top: 10px !important; }
+.event-note { font-size: 1rem; color: var(--muted); margin-top: 8px !important; }
 
 /* Notices */
 .notice { border: 1px solid var(--rule); background: var(--card); padding: 16px 20px; margin: 0 0 24px; }
@@ -134,9 +158,9 @@ strong { font-weight: 600; }
 .rsvp legend + * { clear: both; }
 .event-answer { padding: 14px 0; border-bottom: 1px dashed #e4dac6; }
 .event-answer:last-of-type { border-bottom: 0; }
-.answer-label { font-size: .78rem; letter-spacing: .26em; text-transform: uppercase; color: var(--accent); margin: 0 0 10px; }
-.answer-sub { font: italic 500 1.15rem/1.3 var(--display); margin: 16px 0 8px; }
-.hint { font-size: .92rem; color: var(--muted); margin: -4px 0 10px; }
+.answer-label { font-size: .9rem; letter-spacing: .2em; text-transform: uppercase; color: var(--accent); margin: 0 0 10px; }
+.answer-sub { font: italic 500 1.3rem/1.3 var(--display); margin: 16px 0 8px; }
+.hint { font-size: 1rem; color: var(--muted); margin: -4px 0 10px; }
 
 .choice-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .choice { position: relative; flex: 1 1 130px; }
@@ -144,7 +168,7 @@ strong { font-weight: 600; }
 .choice span {
   display: flex; align-items: center; justify-content: center; min-height: 50px; padding: 8px 14px;
   border: 1px solid var(--rule); background: var(--paper); text-align: center;
-  font: 500 1.15rem/1.2 var(--display); transition: all .12s;
+  font: 500 1.25rem/1.2 var(--display); transition: all .12s;
 }
 .choice input:checked + span { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .choice:hover span { border-color: var(--ink); }
@@ -152,15 +176,15 @@ strong { font-weight: 600; }
 .meal-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
 .meal { position: relative; }
 .meal span { display: block; height: 100%; padding: 12px 14px; border: 1px solid var(--rule); background: var(--paper); transition: all .12s; }
-.meal strong { display: block; font: 600 1.15rem/1.25 var(--display); }
-.meal small { display: block; font-size: .9rem; color: var(--muted); line-height: 1.35; margin-top: 2px; }
+.meal strong { display: block; font: 600 1.25rem/1.25 var(--display); }
+.meal small { display: block; font-size: 1rem; color: var(--muted); line-height: 1.35; margin-top: 2px; }
 .meal input:checked + span { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: #fff; }
 .meal input:checked + span strong::after { content: " ✓"; color: var(--accent); }
 
 .field { display: block; margin: 16px 0 0; }
-.field > span { display: block; font-size: .92rem; color: var(--muted); margin-bottom: 4px; }
+.field > span { display: block; font-size: 1rem; color: var(--muted); margin-bottom: 4px; }
 .field input, .field select, .field textarea {
-  width: 100%; font: 400 1.1rem/1.4 var(--serif); color: var(--ink);
+  width: 100%; font: 400 1.1rem/1.45 var(--serif); color: var(--ink);
   background: transparent; border: 0; border-bottom: 1px solid var(--rule); border-radius: 0;
   padding: 8px 2px; appearance: none;
 }
@@ -169,7 +193,7 @@ strong { font-weight: 600; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); outline: none; }
 .two { display: grid; gap: 0 16px; grid-template-columns: 1fr 1fr; }
 .plus-one { margin-top: 18px; padding-top: 6px; border-top: 1px dashed #e4dac6; }
-.field-error { color: var(--bad); font-size: .95rem; margin: 6px 0 0; }
+.field-error { color: var(--bad); font-size: 1rem; font-weight: 500; margin: 6px 0 0; }
 .submit-row { text-align: center; margin-top: 8px; }
 .submit-row .button { min-width: 260px; min-height: 54px; }
 
@@ -185,7 +209,11 @@ strong { font-weight: 600; }
 .info h3 { font: 400 1.6rem/1.2 var(--display); margin: 0 0 6px; }
 .info p { margin: 0; color: #3c372f; }
 
-.site-foot { text-align: center; color: var(--muted); font: italic 400 1.05rem var(--display); padding: 0 16px 40px; }
+.site-foot { text-align: center; color: var(--muted); font: italic 400 1.3rem var(--display); padding: 0 16px 48px; max-width: 44rem; margin: 0 auto; }
+.site-foot .rule.full { margin: 0 auto 22px; }
+.site-foot p { margin: 0; letter-spacing: .03em; }
+.site-foot a { color: inherit; text-decoration: none; }
+.site-foot a:hover { color: var(--accent); text-decoration: underline; }
 
 .narrow { max-width: 560px; }
 .center { text-align: center; padding-top: 80px; }
@@ -194,11 +222,9 @@ strong { font-weight: 600; }
 [hidden] { display: none !important; }
 
 @media (max-width: 520px) {
-  body { font-size: 1.05rem; }
-  .site-head { padding-top: 28px; }
-  .monogram { width: 170px; }
-  .monogram .initials { font-size: 37px; }
-  .monogram .initials .amp { font-size: 23px; }
+  .site-head { padding-top: 24px; }
+  .monogram { width: 200px; }
+  .site-nav { gap: 2px 20px; }
   .rsvp fieldset { padding: 22px 16px; margin-left: -16px; margin-right: -16px; }
   .two { grid-template-columns: 1fr; }
   .submit-row .button { width: 100%; }
@@ -216,7 +242,7 @@ strong { font-weight: 600; }
 .address-confirm { padding-top: 22px; }
 address.postal { font-style: normal; font: 400 1.2rem/1.5 var(--display); text-align: center; margin: 0 0 14px; }
 details.edit-address { text-align: center; }
-details.edit-address summary { cursor: pointer; color: var(--accent); font-size: .95rem; margin-bottom: 14px; }
+details.edit-address summary { cursor: pointer; color: var(--accent); font-size: 1rem; margin-bottom: 14px; }
 details.edit-address[open] summary { margin-bottom: 0; }
 details.edit-address form { text-align: left; margin-top: 12px; }
 .address-choices { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
@@ -224,16 +250,16 @@ details.edit-address form { text-align: left; margin-top: 12px; }
 .address-choice:hover { border-color: var(--ink); }
 .address-choice.recommended { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: #fff; }
 .address-choice address.postal { font-size: 1.05rem; margin: 6px 0 10px; }
-.choice-label { display: block; font-size: .75rem; letter-spacing: .22em; text-transform: uppercase; color: var(--accent); }
+.choice-label { display: block; font-size: .9rem; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); }
 .two-buttons { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
 @media (max-width: 520px) { .address-choices { grid-template-columns: 1fr; } .address-form, .address-confirm { margin: 0 -16px; padding-left: 16px; padding-right: 16px; } }
 .address-search { position: relative; }
-.search-field input { font-size: 1.15rem; padding: 10px 2px; }
+.search-field input { font-size: 1.2rem; padding: 10px 2px; }
 .addr-results { list-style: none; margin: 2px 0 0; padding: 0; position: absolute; left: 0; right: 0; z-index: 5; background: #fff; border: 1px solid var(--rule); box-shadow: 0 10px 30px rgba(36,33,29,.12); }
 .addr-results li { padding: 10px 14px; cursor: pointer; display: flex; flex-direction: column; border-top: 1px solid #f0e8d9; }
 .addr-results li:first-child { border-top: 0; }
 .addr-results li strong { font-weight: 600; }
-.addr-results li span { font-size: .9rem; color: var(--muted); }
+.addr-results li span { font-size: 1rem; color: var(--muted); }
 .addr-results li.active, .addr-results li:hover { background: var(--paper); }
 .addr-status { min-height: 1.2em; margin: 6px 0 0; }
 .addr-picked { text-align: center; padding-top: 14px; }
@@ -242,13 +268,18 @@ details.edit-address form { text-align: left; margin-top: 12px; }
 
 /* Site navigation */
 .site-head .monogram { display: block; }
-.site-nav { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 26px; padding: 18px 16px 0; max-width: 760px; margin: 0 auto; }
-.site-nav a { font: 500 .78rem/1 var(--serif); letter-spacing: .24em; text-transform: uppercase; color: var(--muted); text-decoration: none; padding: 8px 0; border-bottom: 1px solid transparent; }
+/* The menu: a quiet masthead strip above the emblem, so the names lead the page. */
+.site-nav { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 30px; padding: 6px 16px 0; margin: 0 auto; border-bottom: 1px solid #e6dcc8; }
+.site-nav a { min-height: 44px; display: inline-flex; align-items: center; font: 500 .85rem/1.2 var(--serif); letter-spacing: .18em; text-transform: uppercase; color: var(--muted); text-decoration: none; padding: 6px 0; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .site-nav a:hover { color: var(--ink); }
+/* The current page: a thicker brown bar sitting right on the strip's hairline, like a tab. */
 .site-nav a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
 
 /* Content pages */
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .page-head { text-align: center; padding: 34px 0 6px; }
+/* With the page title hidden, give the schedule a little room under the emblem. */
+.visually-hidden + .timeline, .visually-hidden + .prose + .timeline { margin-top: 36px; }
 .page-title { font: 300 clamp(2.4rem, 9vw, 3.6rem)/1.05 var(--display); margin: 0; }
 .prose { max-width: 36em; margin: 0 auto 40px; }
 .prose h2 { font: 400 1.9rem/1.2 var(--display); margin: 36px 0 10px; text-align: center; }
@@ -265,15 +296,15 @@ details.edit-address form { text-align: left; margin-top: 12px; }
 .timeline-item { display: grid; grid-template-columns: 150px 1fr; gap: 22px; padding: 22px 0; border-top: 1px solid var(--rule); }
 .timeline-item:last-child { border-bottom: 1px solid var(--rule); }
 .timeline-when { text-align: right; display: flex; flex-direction: column; gap: 2px; }
-.t-day { font-size: .74rem; letter-spacing: .24em; text-transform: uppercase; color: var(--accent); }
+.t-day { font-size: .9rem; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); }
 .t-date { font: 400 1.4rem/1.15 var(--display); }
-.t-time { color: var(--muted); font-variant-numeric: lining-nums; font-size: .98rem; }
+.t-time { color: var(--muted); font-variant-numeric: lining-nums; font-size: 1rem; }
 .timeline-what h3 { font: 400 1.6rem/1.15 var(--display); margin: 0 0 4px; }
 .timeline-what p { margin: 0; }
 .t-venue { font: italic 500 1.15rem/1.3 var(--display); color: var(--accent); }
-.t-address a { color: var(--muted); font-size: .95rem; }
-.t-dress { font-size: .76rem; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); margin-top: 8px !important; }
-.t-note { font-size: .95rem; color: var(--muted); margin-top: 6px !important; }
+.t-address a { color: var(--muted); font-size: 1rem; }
+.t-dress { font-size: .9rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-top: 8px !important; }
+.t-note { font-size: 1rem; color: var(--muted); margin-top: 6px !important; }
 
 /* Gallery */
 .gallery { columns: 3 220px; column-gap: 14px; margin: 0 0 48px; }
@@ -283,7 +314,14 @@ details.edit-address form { text-align: left; margin-top: 12px; }
 .photo a { display: block; padding-bottom: 8px; }
 
 @media (max-width: 520px) {
-  .site-nav { gap: 2px 16px; }
+  /* Phones: spread the links evenly across the width, with a little less letter-spacing, so
+     they never crowd together (and still fit on one line on small phones). */
+  .site-nav { justify-content: space-evenly; gap: 0 12px; padding-left: 8px; padding-right: 8px; }
+  .site-nav a { letter-spacing: .1em; font-size: min(.85rem, 4.1vw); }
   .timeline-item { grid-template-columns: 1fr; gap: 6px; }
   .timeline-when { text-align: left; flex-direction: row; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+  /* Phones: the time sits at the right of the day/date row, and the dividers run edge to edge. */
+  .t-time { margin-left: auto; text-align: right; }
+  .timeline { margin-left: -16px; margin-right: -16px; }
+  .timeline-item { padding-left: 16px; padding-right: 16px; }
 }

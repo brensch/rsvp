@@ -103,6 +103,13 @@ impl Worker {
                         let attempts = job.attempts + 1;
                         let msg: String = format!("{e:#}").chars().take(500).collect();
                         tracing::warn!(id = job.id, kind = %job.kind, attempts, error = %msg, "outbox delivery failed");
+                        if job.kind.starts_with("email") {
+                            let entity = job.payload["send_id"].as_str().map(|s| ("email_send", s.to_string())).unwrap_or(("outbox", job.id.to_string()));
+                            store::audit(c, "system", "email.error", entity.0, &entity.1, &json!({
+                                "error": msg, "attempt": attempts, "max_attempts": max_attempts(&job.kind),
+                                "will_retry": attempts < max_attempts(&job.kind), "outbox": job.id, "job": job.payload,
+                            }))?;
+                        }
                         if attempts >= max_attempts(&job.kind) {
                             let tx = crate::db::begin(c)?;
                             tx.execute(
@@ -173,10 +180,13 @@ impl Worker {
                     bail!("household {hid} has no email address");
                 }
                 let tx = crate::db::begin(c)?;
+                let mut sends = vec![];
                 for addr in &to {
                     let send_id = store::create_send(&tx, hid, addr, &kind, test_to.is_some())?;
                     store::enqueue(&tx, "email_one", &json!({"send_id": send_id}))?;
+                    sends.push(json!({"send": send_id, "to": addr}));
                 }
+                store::audit(&tx, "system", "email.queued", "household", &hid.to_string(), &json!({"kind": kind, "test": test_to.is_some(), "emails": sends}))?;
                 tx.commit()?;
                 Ok(to.len())
             })
@@ -223,12 +233,28 @@ impl Worker {
         let names = format!("{} & {}", self.cfg.couple.a_first, self.cfg.couple.b_first);
         let display = self.cfg.email.from.clone().unwrap_or(names);
         let from = format!("{} <{}>", display.split('<').next().unwrap_or(&display).trim(), connected.email);
-        let raw = crate::gmail::mime(&from, &msg.to, self.cfg.email.reply_to.as_deref(), &msg.subject, &msg.text, &msg.html, &msg.attachments);
+        // Safety lock: send it to the lock address instead, saying who it would have gone to.
+        let (to, subject) = match self.cfg.email_lock() {
+            Some(lock) => (lock.to_string(), format!("[Not sent to {}] {}", msg.to, msg.subject)),
+            None => (msg.to.clone(), msg.subject.clone()),
+        };
+        let raw = crate::gmail::mime(&from, &to, self.cfg.email.reply_to.as_deref(), &subject, &msg.text, &msg.html, &msg.attachments);
         let provider_id = match self.gmail.send(&self.http, &self.env, &raw).await {
             Ok(id) => id,
-            Err(crate::gmail::SendError::RateLimited(wait)) => return Ok(Some(wait)),
+            Err(crate::gmail::SendError::RateLimited(wait)) => {
+                let (sid, w) = (send_id.clone(), wait.as_secs());
+                self.db
+                    .call(move |c| store::audit(c, "system", "email.rate_limited", "email_send", &sid, &json!({"retry_in_secs": w})))
+                    .await?;
+                return Ok(Some(wait));
+            }
             Err(crate::gmail::SendError::Other(e)) => return Err(e),
         };
+        let detail = json!({
+            "kind": send.kind, "household": hid, "send": send_id, "to": msg.to, "delivered_to": to,
+            "redirected": self.cfg.email_lock().is_some(), "subject": subject, "gmail_id": provider_id,
+            "test": send.test, "attempt": job.attempts + 1,
+        });
         tracing::info!(outbox = job.id, send = %send_id, household = hid, "email sent");
         let (kind, test) = (send.kind.clone(), send.test);
         self.db
@@ -238,7 +264,7 @@ impl Worker {
                 if !test {
                     store::mark_sent(&tx, hid, &kind)?;
                 }
-                store::audit(&tx, "system", "email.sent", "household", &hid.to_string(), &json!({"kind": kind, "send": send_id, "test": test}))?;
+                store::audit(&tx, "system", "email.sent", "household", &hid.to_string(), &detail)?;
                 tx.commit()
             })
             .await?;

@@ -62,47 +62,47 @@ pub fn build(
     let token = crate::store::household_token(&env.secret, &h);
     let url = assets::link(cfg, &token);
     let greeting = h.greeting.clone();
-    let australia_note = if h.australia { cfg.wedding.australia_note.clone() } else { None };
-    let rows = vec![(h, guests, responses)];
-    let doc = assets::render_households(renderer, cfg, env, asset_kind, Layout::Card, &rows)?;
-    let card_png = assets::to_png(&doc, 0, 2.0)?;
+    let australia = h.australia;
+
     let mut attachments = vec![];
     if asset_kind == Kind::Invitation {
+        let rows = vec![(h, guests, responses)];
+        let doc = assets::render_households(renderer, cfg, env, asset_kind, Layout::Card, &rows)?;
         attachments.push(crate::gmail::Attachment { filename: "invitation.pdf".into(), mime: "application/pdf".into(), bytes: assets::to_pdf(&doc)? });
     }
     let card_src = tracking_url(cfg, send_id);
 
-    let names = format!("{} & {}", cfg.couple.a_first, cfg.couple.b_first);
-    let date = cfg.wedding_date().map(assets::words::date_medium).unwrap_or_default();
-    let deadline = crate::config::parse_date(&cfg.wedding.rsvp_deadline).map(assets::words::date_medium).unwrap_or_default();
-    let (subject, kicker, mut lines, button): (String, &str, Vec<String>, &str) = if asset_kind == Kind::SaveTheDate {
-        (
-            format!("Save the date: {names}, {date}"),
-            "Save the date",
-            vec![
-                format!("We're getting married on {date} in {}, and we would love you to be there.", cfg.wedding.location),
-                "A formal invitation will follow. In the meantime, your personal page has the details and a calendar link.".into(),
-            ],
-            "Your save the date",
-        )
-    } else {
-        (
-            format!("You're invited: {names}"),
-            "You're invited",
-            vec![
-                format!("We would be honoured to have you celebrate with us on {date} in {}.", cfg.wedding.location),
-                format!("Your invitation is attached. Please let us know if you can make it by {deadline}. It only takes a minute."),
-            ],
-            "View details & RSVP",
-        )
-    };
-    if let Some(n) = &cfg.wedding.celebration_note {
-        lines.push(n.clone());
+    let pr = &cfg.prose;
+    let owned = crate::prose::vars(cfg, &greeting);
+    let vars = crate::prose::borrow(&owned);
+    let k = if asset_kind == Kind::SaveTheDate { "email.save_the_date" } else { "email.invitation" };
+    let subject = pr.f(&format!("{k}.subject"), &vars);
+    let kicker = pr.f(&format!("{k}.kicker"), &vars);
+    let sentence = pr.f(&format!("{k}.text"), &vars);
+    let button = pr.f(&format!("{k}.button"), &vars);
+    let wedding_of = pr.opt("website.the_wedding_of");
+    let mut extra = Vec::new();
+    if australia {
+        extra.extend(pr.opt("notes.australia"));
     }
-    if let Some(n) = australia_note {
-        lines.push(n);
-    }
+    let date_line = cfg
+        .wedding_date()
+        .map(|d| format!("{} · {} {} · {}", assets::words::weekday_name(d.weekday()), d.day(), assets::words::month_name(d.month()), d.year()))
+        .unwrap_or_default();
+    // The top of the email is one picture typeset in the site's own fonts (served from
+    // /e/<id>.png, which records the open). Its alt text carries the same words.
+    let card_png = renderer.email_header_png(cfg, &kicker, 1080.0)?;
+    let header_alt = format!(
+        "{kicker}. {}{} & {}, {date_line}, {}",
+        wedding_of.as_deref().map(|w| format!("{w} ")).unwrap_or_default(),
+        cfg.couple.a_first,
+        cfg.couple.b_first,
+        cfg.wedding.location
+    );
     let t = &cfg.theme;
+    let serif = "Georgia,'Times New Roman',serif";
+    // Laid out like the save the date page: kicker, names, divider, date and place, then the
+    // sentence and the button. Email apps don't load web fonts, so it's Georgia throughout.
     let html = html! {
         (DOCTYPE)
         html lang="en" {
@@ -113,28 +113,20 @@ pub fn build(
                 title { (subject) }
             }
             body style={ "margin:0;padding:0;background:" (t.paper) ";" } {
-                div style="display:none;max-height:0;overflow:hidden;opacity:0" { (lines[0]) }
                 table role="presentation" width="100%" cellpadding="0" cellspacing="0" style={ "background:" (t.paper) ";" } {
-                    tr { td align="center" style="padding:32px 16px" {
-                        table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px" {
-                            tr { td align="center" style={ "font-family:Georgia,'Times New Roman',serif;font-size:12px;letter-spacing:4px;text-transform:uppercase;color:" (t.accent) ";padding-bottom:20px" } { (kicker) } }
+                    tr { td align="center" style="padding:16px 6px 40px" {
+                        table role="presentation" width="100%" cellpadding="0" cellspacing="0" style={ "max-width:540px;font-family:" (serif) ";text-align:center" } {
                             tr { td align="center" {
-                                a href=(url) { img src=(card_src) width="440" alt={ (names) ", " (date) } style="display:block;width:100%;max-width:440px;height:auto;border:0;box-shadow:0 8px 30px rgba(0,0,0,.12)"; }
+                                a href=(url) { img src=(card_src) width="540" alt=(header_alt) style={ "display:block;margin:0 auto;width:100%;max-width:540px;height:auto;border:0;font-family:" (serif) ";font-size:16px;color:" (t.ink) }; }
                             } }
-                            tr { td style={ "font-family:Georgia,'Times New Roman',serif;color:" (t.ink) ";font-size:17px;line-height:1.6;padding:32px 8px 8px" } {
-                                p style="margin:0 0 16px;font-style:italic;font-size:20px" { "Dear " (greeting) "," }
-                                @for l in &lines { p style="margin:0 0 16px" { (l) } }
-                            } }
-                            tr { td align="center" style="padding:16px 0 28px" {
-                                a href=(url) style={ "display:inline-block;background:" (t.ink) ";color:" (t.paper) ";font-family:Georgia,serif;font-size:15px;letter-spacing:1px;text-decoration:none;padding:14px 28px;border-radius:2px" } { (button) }
-                            } }
-                            tr { td align="center" style={ "font-family:Georgia,serif;font-size:12px;color:" (t.muted) ";line-height:1.6" } {
-                                "Or copy this link into your browser:" br;
-                                a href=(url) style={ "color:" (t.muted) ";word-break:break-all" } { (url) }
-                                br; br;
-                                "With love, " (names)
-                                br;
-                                span style="font-size:11px" { "This link is personal to you, so please don't share it." }
+                            @if !sentence.trim().is_empty() || !extra.is_empty() {
+                                tr { td style={ "font-size:17px;line-height:1.6;color:" (t.ink) ";padding:30px 4px 0" } {
+                                    (sentence)
+                                    @for n in &extra { p style={ "margin:14px 0 0;font-size:15px;font-style:italic;color:" (t.muted) } { (n) } }
+                                } }
+                            }
+                            tr { td style="padding:28px 0 0" {
+                                a href=(url) style={ "display:inline-block;background:" (t.accent) ";color:" (t.paper) ";font-size:15px;letter-spacing:2px;text-transform:uppercase;text-decoration:none;padding:15px 30px;border-radius:2px" } { (button) }
                             } }
                         }
                     } }
@@ -143,9 +135,14 @@ pub fn build(
         }
     }
     .into_string();
-    let text = format!(
-        "Dear {greeting},\n\n{}\n\n{button}: {url}\n\nWith love,\n{names}\n\n(This link is personal to you, so please don't share it.)\n",
-        lines.join("\n\n")
-    );
+    let names = format!("{} & {}", cfg.couple.a_first, cfg.couple.b_first);
+    let mut text = format!("{}\n\n{names}\n{date_line}\n{}\n\n", kicker.to_uppercase(), cfg.wedding.location);
+    if !sentence.trim().is_empty() {
+        text.push_str(&format!("{sentence}\n\n"));
+    }
+    text.push_str(&format!("{button}: {url}\n"));
+    for n in &extra {
+        text.push_str(&format!("\n{n}\n"));
+    }
     Ok(Message { to: to.to_string(), subject, html, text, attachments, card_png })
 }

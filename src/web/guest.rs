@@ -7,11 +7,12 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Extension, Form, Router};
-use maud::{Markup, html};
+use maud::{Markup, PreEscaped, html};
 use serde::Deserialize;
 
 use super::ui::{self, guest_page};
 use super::{AppResult, AppState, ClientIp, redirect};
+use crate::prose;
 use crate::assets::{self, Kind, Layout, words};
 use crate::config::{Config, parse_local};
 use crate::rsvp::{self, field};
@@ -19,6 +20,8 @@ use crate::store::{self, Guest, Household, Phase, Response as Resp};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/privacy", get(privacy))
+        .route("/hashtag", get(hashtag))
         .route("/i/{token}", get(page).post(submit))
         .route("/i/{token}/calendar.ics", get(calendar))
         .route("/i/{token}/address", axum::routing::post(save_address))
@@ -41,9 +44,9 @@ pub async fn home(State(st): State<AppState>, headers: HeaderMap) -> axum::respo
         None,
         html! {
             section.hero {
-                p.kicker { "By invitation" }
+                p.kicker { (st.cfg.prose.t("website.landing.kicker")) }
                 h1.names { (st.cfg.couple.a_first) span.amp { "&" } (st.cfg.couple.b_first) }
-                p.lede { "Please use the personal link or QR code from your card to view your invitation." }
+                p.lede { (st.cfg.prose.t("website.landing.text")) }
             }
         },
     )
@@ -56,11 +59,49 @@ struct Ctx {
     responses: Vec<Resp>,
     phase: Phase,
     pages: Vec<(String, String)>,
+    photo: Option<crate::site::Photo>,
+    calendar: store::CalendarDownloads,
 }
 
 /// Remembers which household this browser belongs to, so the rest of the site
 /// (schedule, travel, gallery) works without the invitation link in the URL.
 pub const GUEST_COOKIE: &str = "__Host-rsvp_guest";
+
+/// What the footer hashtag means (copy.yaml `hashtag`). Public: there's nothing private in it.
+async fn hashtag(State(st): State<AppState>) -> axum::response::Response {
+    let cfg = &st.cfg;
+    let Some(title) = cfg.prose.opt("hashtag.title") else { return ui::not_found() };
+    let owned = prose::vars(cfg, "");
+    let body = prose::fill(&cfg.prose.t("hashtag.body"), &prose::borrow(&owned));
+    guest_page(
+        cfg,
+        &format!("{title} | {}", cfg.title()),
+        None,
+        html! {
+            h1.page-title.center-text { (title) }
+            article.prose.center-text { (PreEscaped(crate::site::markdown(&body))) }
+        },
+    )
+    .into_response()
+}
+
+/// The privacy policy: public, so anyone (including Google's app review) can read it.
+async fn privacy(State(st): State<AppState>) -> axum::response::Response {
+    let cfg = &st.cfg;
+    let owned = prose::vars(cfg, "");
+    let vars = prose::borrow(&owned);
+    let body = prose::fill(&cfg.prose.t("privacy.body"), &vars);
+    guest_page(
+        cfg,
+        &format!("{} | {}", cfg.prose.t("privacy.title"), cfg.title()),
+        None,
+        html! {
+            h1.page-title.center-text { (cfg.prose.t("privacy.title")) }
+            article.prose { (PreEscaped(crate::site::markdown(&body))) }
+        },
+    )
+    .into_response()
+}
 
 pub fn guest_cookie(headers: &HeaderMap) -> Option<String> {
     headers
@@ -100,7 +141,9 @@ async fn load(st: &AppState, token: &str) -> AppResult<Option<Ctx>> {
             let responses = store::responses_for(c, h.id)?;
             let phase = store::phase(c)?;
             let pages = nav_pages(c, &h)?;
-            Ok(Some(Ctx { h, guests, responses, phase, pages }))
+            let photo = crate::site::home_photo(c)?;
+            let calendar = store::calendar_downloads(c, h.id)?;
+            Ok(Some(Ctx { h, guests, responses, phase, pages, photo, calendar }))
         })
         .await?)
 }
@@ -130,7 +173,8 @@ async fn submit(
         return Ok(redirect(&format!("/i/{token}")));
     }
     if pairs.len() > 500 {
-        return Ok(ui::error_page(StatusCode::BAD_REQUEST, "That didn't work", "The form was too large."));
+        let p = &st.cfg.prose;
+        return Ok(ui::error_page(StatusCode::BAD_REQUEST, &p.t("website.errors.form_too_large_title"), &p.t("website.errors.form_too_large_text")));
     }
     let values: HashMap<String, String> = pairs.into_iter().collect();
     let form = match rsvp::parse(&st.cfg, &ctx.h, &ctx.guests, &values) {
@@ -152,8 +196,8 @@ async fn submit(
             tracing::error!(error = ?e, household = ctx.h.id, "RSVP SAVE FAILED");
             Ok(ui::error_page(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "We couldn't save your reply",
-                "Sorry, something went wrong saving your RSVP. Please go back and try again in a minute, or let us know directly.",
+                &st.cfg.prose.t("website.errors.rsvp_failed_title"),
+                &st.cfg.prose.t("website.errors.rsvp_failed_text"),
             ))
         }
     }
@@ -171,37 +215,56 @@ fn render(
     let cfg = &st.cfg;
     let h = &ctx.h;
     let closed = ctx.phase == Phase::RsvpClosed || (ctx.phase == Phase::RsvpOpen && cfg.past_deadline());
+    let pr = &cfg.prose;
+    let owned = prose::vars(cfg, &h.greeting);
+    let vars = prose::borrow(&owned);
     let date = cfg.wedding_date().ok();
     let events: Vec<_> = h.events.iter().filter_map(|e| cfg.event(e)).collect();
 
     let body = html! {
+        // Names and date, then the photo.
         section.hero {
-            p.kicker { @if ctx.phase == Phase::SaveTheDate { "Save the date" } @else { "You're invited" } }
-            h1.names { (cfg.couple.a_first) span.amp { "&" } (cfg.couple.b_first) }
-            div.rule { span {} i {} span {} }
-            @if let Some(d) = date {
-                p.date { (words::weekday_name(d.weekday())) " · " (d.day()) " " (words::month_name(d.month())) " · " (d.year()) }
+            div.hero-text {
+                p.kicker { @if ctx.phase == Phase::SaveTheDate { (pr.t("website.kicker_save_the_date")) } @else { (pr.t("website.kicker_invited")) } }
+                @if let Some(w) = pr.opt("website.the_wedding_of") { p.wedding-of { (w) } }
+                h1.names { (cfg.couple.a_first) span.amp { "&" } (cfg.couple.b_first) }
+                div.rule { span {} i {} span {} }
+                @if let Some(d) = date {
+                    p.date { (words::weekday_name(d.weekday())) " · " (d.day()) " " (words::month_name(d.month())) " · " (d.year()) }
+                }
+                p.place { (cfg.wedding.location) }
             }
-            p.place { (cfg.wedding.location) }
+            @if let Some(ph) = &ctx.photo {
+                figure.home-photo {
+                    img src={ "/media/" (ph.large()) } alt=(if ph.caption.is_empty() { cfg.title() } else { ph.caption.clone() })
+                        width=(ph.width) height=(ph.height) fetchpriority="high";
+                    @if !ph.caption.is_empty() { figcaption { (ph.caption) } }
+                }
+            }
         }
 
         section.letter {
-            p.salutation { "Dear " (h.greeting) "," }
+            p.salutation { (pr.f("website.salutation", &[("greeting", &h.greeting)])) }
             @match ctx.phase {
                 Phase::SaveTheDate => {
-                    p { "We're getting married, and we would love nothing more than to have you there." }
-                    p { "Please save the date. A formal invitation will follow." }
+                    @for para in pr.list("website.save_the_date", &vars) { p { (prose::rich(&para)) } }
                 }
                 _ => {
-                    p { "We would be honoured to have you celebrate with us. All the details are below." }
+                    @for para in pr.list("website.invited", &vars) { p { (prose::rich(&para)) } }
                     @if !closed {
-                        p { "Kindly let us know whether you can make it by " strong { (date_medium(&cfg.wedding.rsvp_deadline)) } "." }
+                        p { (prose::rich(&pr.f("website.rsvp_by", &vars))) }
                     }
                 }
             }
-            @if let Some(n) = &cfg.wedding.celebration_note { p.celebration { (n) } }
+            @if let Some(n) = pr.opt("notes.celebration") { p.celebration { (n) } }
             div.actions {
-                a.button.ghost href={ "/i/" (token) "/calendar.ics" } { "Add to calendar" }
+                // After a change to their events, say so, so they know to add them again.
+                @let current: Vec<(String, i64)> = events.iter().filter(|e| e.dated()).map(|e| (e.slug.clone(), st.ics_sequence.get(&e.slug).copied().unwrap_or(0))).collect();
+                @let stale = ctx.calendar.count > 0 && current.iter().any(|(slug, seq)| ctx.calendar.last.get(slug) != Some(seq));
+                a.button.ghost.has-note[stale] href={ "/i/" (token) "/calendar.ics" } {
+                    (pr.t("website.add_to_calendar"))
+                    @if stale { span.button-note { (pr.t("website.calendar_updated")) } }
+                }
             }
         }
 
@@ -212,7 +275,8 @@ fn render(
 
         @if ctx.phase != Phase::SaveTheDate {
             section.events {
-                h2.section-title { "Events" }
+                div.rule.full aria-hidden="true" { span {} i {} span {} }
+                h2.section-title { (pr.t("website.events.title")) }
                 div.event-grid {
                     @for e in &events {
                         article.event {
@@ -224,8 +288,8 @@ fn render(
                                     @if let Some(end) = e.ends.as_deref().and_then(|x| parse_local(x).ok()) { " – " (words::time_short(end)) }
                                 }
                             } @else {
-                                p.event-when { "Date to be announced" }
-                                p.event-time { "We'll ask for your RSVP once it's set." }
+                                p.event-when { (pr.t("website.events.date_tba")) }
+                                p.event-time { (pr.t("website.events.rsvp_when_set")) }
                             }
                             p.event-venue { (e.venue) }
                             @if !e.address.is_empty() {
@@ -233,7 +297,7 @@ fn render(
                                     a href=(e.map_url()) rel="noopener noreferrer" target="_blank" { (e.address) }
                                 }
                             }
-                            @if let Some(d) = &e.dress { p.event-dress { "Dress: " (d) } }
+                            @if let Some(d) = &e.dress { p.event-dress { (pr.f("website.events.dress", &[("dress", d)])) } }
                             @if let Some(n) = &e.note { p.event-note { (n) } }
                         }
                     }
@@ -241,19 +305,20 @@ fn render(
             }
 
             section #reply .reply {
-                h2.section-title { "Your reply" }
+                div.rule.full aria-hidden="true" { span {} i {} span {} }
+                h2.section-title { (pr.t("website.reply.title")) }
                 @if just_sent {
                     div.notice.success role="status" {
-                        p.notice-title { "Thank you, we've got your reply." }
-                        p { "You can come back to this page any time before " (date_medium(&cfg.wedding.rsvp_deadline)) " to make changes." }
+                        p.notice-title { (pr.t("website.reply.thanks_title")) }
+                        p { (prose::rich(&pr.f("website.reply.thanks_text", &vars))) }
                     }
                 }
                 @if closed {
                     (summary(cfg, ctx))
-                    p.muted { "RSVPs are now closed. If something has changed, please get in touch with us directly." }
+                    p.muted { (pr.t("website.reply.closed")) }
                 } @else {
                     @if !just_sent { @if let Some(at) = &h.rsvp_at {
-                        div.notice role="status" { p { "We received your reply on " (ui::when(cfg, at)) ". You can update it below." } }
+                        div.notice role="status" { p { (pr.f("website.reply.received", &[("when", &ui::when(cfg, at))])) } }
                     } }
                     (form(cfg, token, ctx, values, errors))
                 }
@@ -265,18 +330,15 @@ fn render(
     guest_page(cfg, &format!("{} | {}", h.greeting, cfg.title()), Some(&nav), body)
 }
 
-fn date_medium(iso: &str) -> String {
-    crate::config::parse_date(iso).map(words::date_medium).unwrap_or_else(|_| iso.to_string())
-}
-
 fn form(cfg: &Config, token: &str, ctx: &Ctx, values: &HashMap<String, String>, errors: &BTreeMap<String, String>) -> Markup {
+    let pr = &cfg.prose;
     let v = |k: &str| values.get(k).cloned().unwrap_or_default();
     let events: Vec<_> = ctx.h.events.iter().filter_map(|e| cfg.event(e)).collect();
     let err = |k: &str| errors.get(k).map(|m| html! { p.field-error { (m) } });
     html! {
         @if !errors.is_empty() {
             div.notice.error role="alert" {
-                p.notice-title { "Just a couple of things before we can save this:" }
+                p.notice-title { (pr.t("website.reply.fix_first")) }
                 ul { @for m in errors.values() { li { (m) } } }
             }
         }
@@ -290,8 +352,8 @@ fn form(cfg: &Config, token: &str, ctx: &Ctx, values: &HashMap<String, String>, 
                         div.event-answer data-attending-group=(att_key) {
                             p.answer-label { (e.name) }
                             div.choice-row {
-                                label.choice { input type="radio" name=(att_key) value="yes" checked[cur == "yes"]; span { "Joyfully accepts" } }
-                                label.choice { input type="radio" name=(att_key) value="no" checked[cur == "no"]; span { "Regretfully declines" } }
+                                label.choice { input type="radio" name=(att_key) value="yes" checked[cur == "yes"]; span { (pr.t("website.reply.accept")) } }
+                                label.choice { input type="radio" name=(att_key) value="no" checked[cur == "no"]; span { (pr.t("website.reply.decline")) } }
                             }
                             @if let Some(m) = err(&att_key) { (m) }
                             @let meals = rsvp::meals_for(cfg, g.is_child);
@@ -299,7 +361,7 @@ fn form(cfg: &Config, token: &str, ctx: &Ctx, values: &HashMap<String, String>, 
                                 @let mk = field::meal(g.id, &e.slug);
                                 @let curm = v(&mk);
                                 div.meals data-show-when=(att_key) {
-                                    p.answer-sub { "Dinner" }
+                                    p.answer-sub { (pr.t("website.reply.dinner")) }
                                     div.meal-grid {
                                         @for m in &meals {
                                             label.meal {
@@ -317,33 +379,33 @@ fn form(cfg: &Config, token: &str, ctx: &Ctx, values: &HashMap<String, String>, 
                     @let att_keys = events.iter().filter(|e| e.dated() && g.invited(&ctx.h, &e.slug)).map(|e| field::att(g.id, &e.slug)).collect::<Vec<_>>().join(" ");
                     @if g.is_plus_one() {
                         div.plus-one data-show-when=(att_keys) {
-                            p.answer-sub { "Who are you bringing?" }
+                            p.answer-sub { (pr.t("website.reply.plus_one_who")) }
                             div.two {
-                                label.field { span { "First name" } input type="text" name=(field::first(g.id)) value=(v(&field::first(g.id))) maxlength="80" autocomplete="off"; }
-                                label.field { span { "Last name" } input type="text" name=(field::last(g.id)) value=(v(&field::last(g.id))) maxlength="80" autocomplete="off"; }
+                                label.field { span { (pr.t("website.reply.first_name")) } input type="text" name=(field::first(g.id)) value=(v(&field::first(g.id))) maxlength="80" autocomplete="off"; }
+                                label.field { span { (pr.t("website.reply.last_name")) } input type="text" name=(field::last(g.id)) value=(v(&field::last(g.id))) maxlength="80" autocomplete="off"; }
                             }
                             @if let Some(m) = err(&field::first(g.id)) { (m) }
                         }
                     }
                     @if cfg.rsvp.ask_dietary {
                         label.field data-show-when=(att_keys) {
-                            span { "Dietary requirements or allergies" }
-                            input type="text" name=(field::diet(g.id)) value=(v(&field::diet(g.id))) maxlength="500" placeholder="None";
+                            span { (pr.t("website.reply.dietary")) }
+                            input type="text" name=(field::diet(g.id)) value=(v(&field::diet(g.id))) maxlength="500" placeholder=(pr.t("website.reply.dietary_placeholder"));
                         }
                     }
                 }
             }
 
             fieldset.extras {
-                legend { "A few extras" }
+                legend { (pr.t("website.reply.extras_title")) }
                 @if cfg.rsvp.ask_song {
-                    label.field { span { "A song that will get you on the dance floor" } input type="text" name="song" value=(v("song")) maxlength="200"; }
+                    label.field { span { (pr.t("website.reply.song")) } input type="text" name="song" value=(v("song")) maxlength="200"; }
                 }
                 @if cfg.rsvp.ask_accommodation {
                     label.field {
-                        span { "Accommodation" }
+                        span { (pr.t("website.reply.accommodation")) }
                         select name="accommodation" {
-                            @for (k, l) in rsvp::ACCOMMODATION_OPTIONS { option value=(k) selected[v("accommodation") == *k] { (l) } }
+                            @for (k, l) in pr.options("website.reply.accommodation_options") { option value=(k) selected[v("accommodation") == k] { (l) } }
                         }
                     }
                 }
@@ -351,28 +413,29 @@ fn form(cfg: &Config, token: &str, ctx: &Ctx, values: &HashMap<String, String>, 
                     div.field {
                         span { (cfg.rsvp.transport_question) }
                         div.choice-row {
-                            @for (k, l) in rsvp::TRANSPORT_OPTIONS.iter().filter(|(k, _)| !k.is_empty()) {
-                                label.choice { input type="radio" name="transport" value=(k) checked[v("transport") == *k]; span { (l) } }
+                            @for (k, l) in pr.options("website.reply.transport_options") {
+                                label.choice { input type="radio" name="transport" value=(k) checked[v("transport") == k]; span { (l) } }
                             }
                         }
                     }
                 }
                 @if cfg.rsvp.ask_message {
-                    label.field { span { "A note for us" } textarea name="message" rows="4" maxlength="2000" { (v("message")) } }
+                    label.field { span { (pr.t("website.reply.message")) } textarea name="message" rows="4" maxlength="2000" { (v("message")) } }
                 }
             }
             div.submit-row {
-                button.button.primary type="submit" { @if ctx.h.rsvp_at.is_some() { "Update our reply" } @else { "Send our reply" } }
+                button.button.primary type="submit" { @if ctx.h.rsvp_at.is_some() { (pr.t("website.reply.update")) } @else { (pr.t("website.reply.send")) } }
             }
         }
     }
 }
 
 fn summary(cfg: &Config, ctx: &Ctx) -> Markup {
+    let pr = &cfg.prose;
     let by: HashMap<(i64, &str), &Resp> = ctx.responses.iter().map(|r| ((r.guest_id, r.event_slug.as_str()), r)).collect();
     html! {
         div.summary {
-            @if ctx.h.rsvp_at.is_none() { p { "We didn't receive a reply from you." } }
+            @if ctx.h.rsvp_at.is_none() { p { (pr.t("website.reply.none_received")) } }
             @for g in &ctx.guests {
                 div.summary-person {
                     p.summary-name { (g.full_name()) }
@@ -382,9 +445,9 @@ fn summary(cfg: &Config, ctx: &Ctx) -> Markup {
                                 li {
                                     (e.name) ": "
                                     @match by.get(&(g.id, slug.as_str())) {
-                                        Some(r) if r.attending => { "attending" @if let Some(m) = cfg.meal(&r.meal) { " · " (m.name) } }
-                                        Some(_) => { "not attending" }
-                                        None => { "no reply" }
+                                        Some(r) if r.attending => { (pr.t("website.reply.attending")) @if let Some(m) = cfg.meal(&r.meal) { " · " (m.name) } }
+                                        Some(_) => { (pr.t("website.reply.not_attending")) }
+                                        None => { (pr.t("website.reply.no_reply")) }
                                     }
                                 }
                             }
@@ -403,6 +466,7 @@ async fn calendar(State(st): State<AppState>, Path(token): Path<String>) -> AppR
     let fmt = time::macros::format_description!("[year][month][day]T[hour][minute][second]Z");
     let stamp = time::OffsetDateTime::now_utc().format(&fmt)?;
     let host = cfg.site.base_url.trim_start_matches("https://").trim_start_matches("http://");
+    let mut held = std::collections::BTreeMap::new();
     let mut ics = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//rsvp//wedding//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\n");
     for slug in &ctx.h.events {
         let Some(e) = cfg.event(slug) else { continue };
@@ -414,13 +478,18 @@ async fn calendar(State(st): State<AppState>, Path(token): Path<String>) -> AppR
         };
         ics.push_str("BEGIN:VEVENT\r\n");
         ics.push_str(&fold(&format!("UID:{}-{}@{host}", e.slug, ctx.h.id)));
-        ics.push_str(&format!("DTSTAMP:{stamp}\r\nDTSTART:{}\r\nDTEND:{}\r\n", start.format(&fmt)?, end.format(&fmt)?));
+        // SEQUENCE goes up when the event changes, so calendars update it rather than keep the old one.
+        let seq = st.ics_sequence.get(&e.slug).copied().unwrap_or(0);
+        held.insert(e.slug.clone(), seq);
+        ics.push_str(&format!("DTSTAMP:{stamp}\r\nSEQUENCE:{seq}\r\nDTSTART:{}\r\nDTEND:{}\r\n", start.format(&fmt)?, end.format(&fmt)?));
         ics.push_str(&fold(&format!("SUMMARY:{}", ics_escape(&format!("{} & {}: {}", cfg.couple.a_first, cfg.couple.b_first, e.name)))));
         ics.push_str(&fold(&format!("LOCATION:{}", ics_escape(&format!("{}, {}", e.venue, e.address)))));
         ics.push_str(&fold(&format!("DESCRIPTION:{}", ics_escape(&format!("Details and RSVP: {}", assets::link(cfg, &token))))));
         ics.push_str("END:VEVENT\r\n");
     }
     ics.push_str("END:VCALENDAR\r\n");
+    let hid = ctx.h.id;
+    st.db.call(move |c| store::record_calendar_download(c, hid, &held)).await?;
     Ok((
         [(header::CONTENT_TYPE, "text/calendar; charset=utf-8"), (header::CONTENT_DISPOSITION, "attachment; filename=\"wedding.ics\"")],
         ics,
@@ -453,8 +522,6 @@ fn fold(line: &str) -> String {
 async fn download(State(st): State<AppState>, Path((token, file)): Path<(String, String)>) -> AppResult {
     let Some(ctx) = load(&st, &token).await? else { return Ok(ui::not_found()) };
     let (kind, ext) = match file.as_str() {
-        "save-the-date.pdf" => (Kind::SaveTheDate, "pdf"),
-        "save-the-date.png" => (Kind::SaveTheDate, "png"),
         "invitation.pdf" if ctx.phase != Phase::SaveTheDate => (Kind::Invitation, "pdf"),
         "invitation.png" if ctx.phase != Phase::SaveTheDate => (Kind::Invitation, "png"),
         _ => return Ok(ui::not_found()),
@@ -484,7 +551,7 @@ pub enum AddressView {
 
 use crate::address::{self, Action as AddrAction, Address};
 
-fn address_fields(a: &Address, australia: bool) -> Markup {
+fn address_fields(pr: &prose::Prose, a: &Address, australia: bool) -> Markup {
     let default_country = if australia { "Australia" } else { "United States" };
     let country = if a.country.is_empty() { default_country } else { a.country.as_str() };
     let known = address::COUNTRIES.iter().any(|(n, _)| *n == country);
@@ -493,33 +560,37 @@ fn address_fields(a: &Address, australia: bool) -> Markup {
         input type="hidden" name="picked" value="";
         div.address-search hidden {
             label.field.search-field {
-                span { "Search for your address" }
-                input.addr-search type="text" autocomplete="off" spellcheck="false" placeholder="Start typing your street address…"
+                span { (pr.t("website.address.search_label")) }
+                input.addr-search type="text" autocomplete="off" spellcheck="false" placeholder=(pr.t("website.address.search_placeholder"))
                     role="combobox" aria-autocomplete="list" aria-expanded="false" maxlength="200";
             }
             ul.addr-results role="listbox" hidden {}
-            p.addr-status.muted.small aria-live="polite" {}
+            // guest.js shows these while searching
+            p.addr-status.muted.small aria-live="polite"
+                data-no-matches=(pr.t("website.address.search_no_matches")) data-broken=(pr.t("website.address.search_broken"))
+                data-looking-up=(pr.t("website.address.search_looking_up")) data-lookup-failed=(pr.t("website.address.search_lookup_failed"))
+                data-pick=(pr.t("website.address.search_pick")) {}
             div.addr-picked hidden {
                 address.postal {}
-                button.linkish.addr-change type="button" { "Change" }
+                button.linkish.addr-change type="button" { (pr.t("website.address.change")) }
             }
-            p.small { button.linkish.addr-manual type="button" { "Can't find it? Enter it manually" } }
+            p.small { button.linkish.addr-manual type="button" { (pr.t("website.address.manual")) } }
         }
-        label.field.unit-field { span { "Apartment, unit, suite " small.muted { "(optional)" } } input name="addr2" value=(a.addr2) autocomplete="address-line2" maxlength="200"; }
+        label.field.unit-field { span { (pr.t("website.address.unit")) " " small.muted { (pr.t("website.address.optional")) } } input name="addr2" value=(a.addr2) autocomplete="address-line2" maxlength="200"; }
         div.manual-fields {
-        p.small.addr-back-wrap hidden { button.linkish.addr-back type="button" { "← Search for my address instead" } }
-        label.field { span { "Street address" } input name="addr1" value=(a.addr1) autocomplete="address-line1" maxlength="200"; }
+        p.small.addr-back-wrap hidden { button.linkish.addr-back type="button" { (pr.t("website.address.back_to_search")) } }
+        label.field { span { (pr.t("website.address.street")) } input name="addr1" value=(a.addr1) autocomplete="address-line1" maxlength="200"; }
         div.two {
-            label.field { span { "City / suburb" } input name="city" value=(a.city) autocomplete="address-level2" required maxlength="100"; }
-            label.field { span { "State" } input name="region" value=(a.region) autocomplete="address-level1" maxlength="100"; }
+            label.field { span { (pr.t("website.address.city")) } input name="city" value=(a.city) autocomplete="address-level2" required maxlength="100"; }
+            label.field { span { (pr.t("website.address.state")) } input name="region" value=(a.region) autocomplete="address-level1" maxlength="100"; }
         }
         div.two {
-            label.field { span { "ZIP / postcode" } input name="postcode" value=(a.postcode) autocomplete="postal-code" maxlength="20"; }
+            label.field { span { (pr.t("website.address.postcode")) } input name="postcode" value=(a.postcode) autocomplete="postal-code" maxlength="20"; }
             label.field {
-                span { "Country" }
+                span { (pr.t("website.address.country")) }
                 select name="country" autocomplete="country-name" {
                     @for (n, _) in address::COUNTRIES { option value=(n) selected[*n == country] { (n) } }
-                    option value="other" selected[!known] { "Somewhere else" }
+                    option value="other" selected[!known] { (pr.t("website.address.country_other")) }
                 }
             }
         }
@@ -539,61 +610,64 @@ fn hidden_address(prefix: &str, a: &Address) -> Markup {
     }
 }
 
-fn address_section(_cfg: &Config, token: &str, h: &Household, view: &AddressView) -> Markup {
+fn address_section(cfg: &Config, token: &str, h: &Household, view: &AddressView) -> Markup {
+    let pr = &cfg.prose;
     let action = format!("/i/{token}/address#address");
     let current = Address::from_household(h);
     html! {
+        // The divider sits outside the (narrower) address section so it matches the others.
+        div.rule.full aria-hidden="true" { span {} i {} span {} }
         section #address .address {
-            h2.section-title { "Your address" }
+            h2.section-title { (pr.t("website.address.title")) }
             @match view {
                 AddressView::Current { saved } => {
                     @if *saved {
-                        div.notice.success role="status" { p.notice-title { "Thank you, we've got your address." } }
+                        div.notice.success role="status" { p.notice-title { (pr.t("website.address.thanks")) } }
                     }
                     @if !current.lines().is_empty() && !*saved {
-                        p.center-text { "We'll send your formal invitation to:" }
+                        p.center-text { (pr.t("website.address.sending_to")) }
                     } @else if current.lines().is_empty() {
-                        p.center-text { "Please fill out your address so we can send you a formal invitation." }
+                        p.center-text { (pr.t("website.address.ask")) }
                     }
                     @if !current.lines().is_empty() {
                         address.postal { @for l in current.lines() { (l) br; } }
                         details.edit-address {
-                            summary { "Not right? Update it" }
-                            form.address-form method="post" action=(action) { (address_fields(&current, h.australia)) div.submit-row { button.button.primary type="submit" { "Save address" } } }
+                            summary { (pr.t("website.address.update")) }
+                            form.address-form method="post" action=(action) { (address_fields(pr, &current, h.australia)) div.submit-row { button.button.primary type="submit" { (pr.t("website.address.save")) } } }
                         }
                     } @else {
-                        form.address-form method="post" action=(action) { (address_fields(&current, h.australia)) div.submit-row { button.button.primary type="submit" { "Save address" } } }
+                        form.address-form method="post" action=(action) { (address_fields(pr, &current, h.australia)) div.submit-row { button.button.primary type="submit" { (pr.t("website.address.save")) } } }
                     }
                 }
                 AddressView::Form { entered, error } => {
                     div.notice.error role="alert" { p { (error) } }
-                    form.address-form method="post" action=(action) { (address_fields(entered, h.australia)) div.submit-row { button.button.primary type="submit" { "Save address" } } }
+                    form.address-form method="post" action=(action) { (address_fields(pr, entered, h.australia)) div.submit-row { button.button.primary type="submit" { (pr.t("website.address.save")) } } }
                 }
                 AddressView::Confirm { entered, suggestion, action: act, detail } => {
                     form.address-confirm method="post" action=(action) {
                         (hidden_address("", entered))
                         @if let Some(s) = suggestion.as_ref().filter(|_| *act != AddrAction::Fix) {
                             (hidden_address("s_", s))
-                            p.center-text { @if *act == AddrAction::AddUnit { "That building has several units. Is there an apartment or unit number? Otherwise, which version should we use?" } @else { "We checked your address with the postal service. Which version should we use?" } }
+                            p.center-text { @if *act == AddrAction::AddUnit { (pr.t("website.address.which_unit")) } @else { (pr.t("website.address.which_version")) } }
                             div.address-choices {
                                 button.address-choice.recommended type="submit" name="choice" value="suggested" {
-                                    span.choice-label { "Suggested" }
+                                    span.choice-label { (pr.t("website.address.suggested")) }
                                     address.postal { @for l in s.lines() { (l) br; } }
                                 }
                                 button.address-choice type="submit" name="choice" value="entered" {
-                                    span.choice-label { "As you typed it" }
+                                    span.choice-label { (pr.t("website.address.as_typed")) }
                                     address.postal { @for l in entered.lines() { (l) br; } }
                                 }
                             }
                         } @else {
                             div.notice.error role="alert" {
-                                p.notice-title { "We couldn't find that address." }
+                                p.notice-title { (pr.t("website.address.not_found")) }
                                 @if !detail.is_empty() { p { (detail) } }
                             }
                             address.postal { @for l in entered.lines() { (l) br; } }
                             div.submit-row.two-buttons {
-                                button.button.primary type="submit" name="choice" value="edit" { "Edit address" }
-                                button.button.ghost type="submit" name="choice" value="entered" { "It's correct, save it" }
+                                button.button.primary type="submit" name="choice" value="edit" { (pr.t("website.address.edit")) }
+                                button.button.ghost type="submit" name="choice" value="entered" { (pr.t("website.address.keep")) }
                             }
                         }
                     }
@@ -632,7 +706,7 @@ async fn save_address(
     };
 
     if choice == Some("edit") {
-        return show(AddressView::Form { entered, error: "Update the address below and save it again.".into() }, StatusCode::OK);
+        return show(AddressView::Form { entered, error: st.cfg.prose.t("website.address.update_and_save") }, StatusCode::OK);
     }
     if let Err(msg) = entered.validate_fields() {
         return show(AddressView::Form { entered, error: msg }, StatusCode::UNPROCESSABLE_ENTITY);
@@ -663,10 +737,10 @@ async fn save_address(
                 Some(c) if c.action == AddrAction::Fix => {
                     let mut detail = vec![];
                     if !c.unconfirmed.is_empty() {
-                        detail.push(format!("We couldn't confirm: {}.", c.unconfirmed.join(", ")));
+                        detail.push(st.cfg.prose.f("website.address.not_confirmed", &[("parts", &c.unconfirmed.join(", "))]));
                     }
                     if !c.missing.is_empty() {
-                        detail.push(format!("It seems to be missing: {}.", c.missing.join(", ")));
+                        detail.push(st.cfg.prose.f("website.address.missing", &[("parts", &c.missing.join(", "))]));
                     }
                     return show(AddressView::Confirm { entered, suggestion: None, action: c.action, detail: detail.join(" ") }, StatusCode::OK);
                 }
@@ -687,7 +761,7 @@ async fn save_address(
         Ok(()) => Ok(redirect(&format!("/i/{token}?address=1#address"))),
         Err(e) => {
             tracing::error!(error = ?e, household = ctx.h.id, "ADDRESS SAVE FAILED");
-            Ok(ui::error_page(StatusCode::SERVICE_UNAVAILABLE, "We couldn't save your address", "Sorry, please go back and try again in a minute, or send it to us directly."))
+            Ok(ui::error_page(StatusCode::SERVICE_UNAVAILABLE, &st.cfg.prose.t("website.errors.address_failed_title"), &st.cfg.prose.t("website.errors.address_failed_text")))
         }
     }
 }
