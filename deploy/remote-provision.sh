@@ -46,10 +46,11 @@ if [ ! -f /etc/rsvp/env ]; then
 # without it, existing links and QR codes stop working after a restore.
 RSVP_SECRET=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
 DISCORD_WEBHOOK_URL=
-RESEND_API_KEY=
+GMAIL_CLIENT_ID=
+GMAIL_CLIENT_SECRET=
 EOF
   chown root:rsvp /etc/rsvp/env && chmod 0640 /etc/rsvp/env
-  echo ">>> Generated /etc/rsvp/env. Add DISCORD_WEBHOOK_URL and RESEND_API_KEY, and copy RSVP_SECRET to your password manager."
+  echo ">>> Generated /etc/rsvp/env. Add DISCORD_WEBHOOK_URL and GMAIL_CLIENT_ID/GMAIL_CLIENT_SECRET, and copy RSVP_SECRET to your password manager."
 fi
 
 echo "== systemd units"
@@ -69,7 +70,7 @@ systemctl enable claude-agent
 cat <<EOF
 
 Provisioned. Remaining one-time steps (see README "First boot"):
-  - edit /etc/rsvp/env (Discord webhook, Resend key)
+  - edit /etc/rsvp/env (Discord webhook, Gmail OAuth client)
   - deploy the binary + wedding.toml with ./deploy/deploy.sh
   - log Claude in:  sudo -iu rsvp-agent  then  cd /srv/rsvp-agent && claude   (/login, trust folder, /exit)
   - systemctl start claude-agent

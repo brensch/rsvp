@@ -71,6 +71,22 @@ async fn run_inner(db: &Db, cfg: &Config, env: &Env) -> Result<Vec<String>> {
             upload(&http, &token, bucket, &name, f).await?;
             uploaded.push(format!("gs://{bucket}/{name}"));
         }
+        // Gallery photos: each file once, never overwritten (the name is a random UUID).
+        let media = crate::site::media_dir(&env.data_dir);
+        if media.is_dir() {
+            let mut new = 0;
+            for entry in std::fs::read_dir(&media)? {
+                let path = entry?.path();
+                let fname = path.file_name().unwrap().to_string_lossy().to_string();
+                if !crate::site::valid_media_name(&fname) {
+                    continue;
+                }
+                if upload(&http, &token, bucket, &format!("media/{fname}"), &path).await? {
+                    new += 1;
+                }
+            }
+            uploaded.push(format!("{new} new photo file(s)"));
+        }
     } else {
         uploaded.extend(files.iter().map(|f| f.display().to_string()));
     }
@@ -116,21 +132,25 @@ async fn gce_token(http: &reqwest::Client) -> Result<String> {
     v["access_token"].as_str().map(String::from).context("no access_token")
 }
 
-async fn upload(http: &reqwest::Client, token: &str, bucket: &str, name: &str, file: &Path) -> Result<()> {
+/// Upload a file unless the object already exists. Returns whether it was uploaded.
+async fn upload(http: &reqwest::Client, token: &str, bucket: &str, name: &str, file: &Path) -> Result<bool> {
     let body = tokio::fs::read(file).await?;
     let resp = http
         .post(format!("https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"))
         // ifGenerationMatch=0: never overwrite an existing object.
         .query(&[("uploadType", "media"), ("name", name), ("ifGenerationMatch", "0")])
         .bearer_auth(token)
-        .header("content-type", "application/gzip")
+        .header("content-type", if name.ends_with(".jpg") { "image/jpeg" } else { "application/gzip" })
         .body(body)
         .send()
         .await?;
+    if resp.status() == reqwest::StatusCode::PRECONDITION_FAILED {
+        return Ok(false); // already backed up
+    }
     if !resp.status().is_success() {
         bail!("upload {name}: {} {}", resp.status(), resp.text().await.unwrap_or_default().chars().take(300).collect::<String>());
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Take one snapshot per UTC day, at or after the configured hour.

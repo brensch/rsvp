@@ -37,7 +37,7 @@ pub enum Cmd {
     GenSecret,
     /// Validate config, database and journal
     Check,
-    /// Create a one-time admin invite link
+    /// Create a one-time admin invite link. --role: owner | a_parent | b_parent | helper
     Invite {
         #[arg(long, default_value = "owner")]
         role: String,
@@ -83,8 +83,10 @@ pub enum Cmd {
 #[derive(Subcommand)]
 pub enum UsersCmd {
     List,
-    /// Set role: owner | helper | pending | disabled
+    /// Set access: owner | a_parent | b_parent | helper | pending | disabled
     SetRole { name: String, role: String },
+    /// Permanently delete a disabled or pending account
+    Delete { name: String },
 }
 
 #[derive(Subcommand)]
@@ -219,7 +221,7 @@ pub fn run_sync(cli: Cli) -> Result<()> {
                 }
                 Ok((ok, crate::rsvp::journal_missing(c, &journal)?.len(), store::list_households(c, false)?.len(), schema, columns))
             })?;
-            Renderer::new(&cli.data).monogram_svg(&cfg).context("rendering templates")?;
+            Renderer::new(&cli.data).monogram_png(&cfg, 200.0).context("rendering templates")?;
             print(&json!({"config": "ok", "integrity": integrity, "journal_missing": missing, "households": households,
                 "schema_version": schema, "columns": columns, "templates": "ok"}));
             if integrity != "ok" || missing > 0 {
@@ -232,10 +234,14 @@ pub fn run_sync(cli: Cli) -> Result<()> {
             eprintln!("One-time link for a new {role}; expires in {hours}h.");
         }
         Cmd::Users(UsersCmd::List) => print(&serde_json::to_value(db.with(|c| store::users(c))?)?),
+        Cmd::Users(UsersCmd::Delete { name }) => {
+            db.with(|c| store::delete_user(c, &who, &name))?;
+            println!("deleted user {name}");
+        }
         Cmd::Users(UsersCmd::SetRole { name, role }) => {
             db.with(|c| {
                 let u = store::user_by_name(c, &name)?.with_context(|| format!("no user named {name}"))?;
-                store::set_user_role(c, &who, &u.id, &role)
+                store::set_user_access(c, &who, &u.id, &role)
             })?;
             println!("{name} is now {role}");
         }

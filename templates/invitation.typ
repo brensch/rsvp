@@ -8,7 +8,7 @@
   frame(card-w, card-h)
   block(width: 100%, height: 100%, inset: (x: 14mm, top: 18mm, bottom: 16mm), align(center, {
     v(1fr)
-    monogram(size: 22mm)
+    monogram(size: 44mm)
     v(7mm)
     text(font: display, style: "italic", size: 13pt, fill: muted, C.host_line)
     v(7mm)
@@ -42,7 +42,7 @@
   block(width: 100%, height: 100%, inset: (x: 15mm, top: 17mm, bottom: 15mm), align(center, {
     caps("The details", size: 7pt, tracking: 0.42em)
     v(3.5mm)
-    text(font: script, size: 21pt, fill: accent)[for #it.greeting]
+    text(font: display, style: "italic", size: 19pt, fill: accent)[for #it.greeting]
     v(1fr)
     for (i, e) in it.events.enumerate() {
       if i > 0 { v(5mm); thin-rule(width: 12mm); v(5mm) }

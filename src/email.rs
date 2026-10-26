@@ -1,11 +1,10 @@
-//! Personalised save-the-date / invitation emails, sent through Resend.
+//! Personalised save-the-date / invitation emails, one per address, sent through Gmail.
+//! The card picture loads from `/e/{send_id}.png`, which records that the email was opened.
 
 use std::collections::BTreeSet;
 
-use anyhow::{Context, Result, bail};
-use base64::Engine;
+use anyhow::{Result, bail};
 use maud::{DOCTYPE, html};
-use serde_json::json;
 
 use crate::assets::{self, Kind, Layout, Renderer};
 use crate::config::{Config, Env};
@@ -26,11 +25,22 @@ pub fn recipients(h: &Household, guests: &[Guest]) -> Vec<String> {
 }
 
 pub struct Message {
-    pub to: Vec<String>,
+    pub to: String,
     pub subject: String,
     pub html: String,
     pub text: String,
-    pub attachments: Vec<serde_json::Value>,
+    pub attachments: Vec<crate::gmail::Attachment>,
+    /// The card picture, served (and counted) at `/e/{send_id}.png`.
+    pub card_png: Vec<u8>,
+}
+
+/// Where the card picture for a household's email is kept for `/e/...` to serve.
+pub fn card_file(env: &Env, household_id: i64, kind: &str) -> std::path::PathBuf {
+    env.data_dir.join("mail").join(format!("{household_id}-{kind}.png"))
+}
+
+pub fn tracking_url(cfg: &Config, send_id: &str) -> String {
+    format!("{}/e/{send_id}.png", cfg.site.base_url)
 }
 
 pub fn build(
@@ -41,32 +51,26 @@ pub fn build(
     h: Household,
     guests: Vec<Guest>,
     responses: Vec<Response>,
-    test_to: Option<String>,
+    to: &str,
+    send_id: &str,
 ) -> Result<Message> {
     let asset_kind = match kind {
         "save_the_date" => Kind::SaveTheDate,
         "invitation" => Kind::Invitation,
         _ => bail!("unknown email kind {kind}"),
     };
-    let to = match test_to {
-        Some(t) => vec![t],
-        None => recipients(&h, &guests),
-    };
-    if to.is_empty() {
-        bail!("household {} has no email address", h.id);
-    }
     let token = crate::store::household_token(&env.secret, &h);
     let url = assets::link(cfg, &token);
     let greeting = h.greeting.clone();
     let australia_note = if h.australia { cfg.wedding.australia_note.clone() } else { None };
     let rows = vec![(h, guests, responses)];
     let doc = assets::render_households(renderer, cfg, env, asset_kind, Layout::Card, &rows)?;
-    let png = assets::to_png(&doc, 0, 2.0)?;
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let mut attachments = vec![json!({"filename": "card.png", "content": b64.encode(&png), "content_id": "card"})];
+    let card_png = assets::to_png(&doc, 0, 2.0)?;
+    let mut attachments = vec![];
     if asset_kind == Kind::Invitation {
-        attachments.push(json!({"filename": "invitation.pdf", "content": b64.encode(assets::to_pdf(&doc)?)}));
+        attachments.push(crate::gmail::Attachment { filename: "invitation.pdf".into(), mime: "application/pdf".into(), bytes: assets::to_pdf(&doc)? });
     }
+    let card_src = tracking_url(cfg, send_id);
 
     let names = format!("{} & {}", cfg.couple.a_first, cfg.couple.b_first);
     let date = cfg.wedding_date().map(assets::words::date_medium).unwrap_or_default();
@@ -92,6 +96,9 @@ pub fn build(
             "View details & RSVP",
         )
     };
+    if let Some(n) = &cfg.wedding.celebration_note {
+        lines.push(n.clone());
+    }
     if let Some(n) = australia_note {
         lines.push(n);
     }
@@ -112,7 +119,7 @@ pub fn build(
                         table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px" {
                             tr { td align="center" style={ "font-family:Georgia,'Times New Roman',serif;font-size:12px;letter-spacing:4px;text-transform:uppercase;color:" (t.accent) ";padding-bottom:20px" } { (kicker) } }
                             tr { td align="center" {
-                                a href=(url) { img src="cid:card" width="440" alt={ (names) ", " (date) } style="display:block;width:100%;max-width:440px;height:auto;border:0;box-shadow:0 8px 30px rgba(0,0,0,.12)"; }
+                                a href=(url) { img src=(card_src) width="440" alt={ (names) ", " (date) } style="display:block;width:100%;max-width:440px;height:auto;border:0;box-shadow:0 8px 30px rgba(0,0,0,.12)"; }
                             } }
                             tr { td style={ "font-family:Georgia,'Times New Roman',serif;color:" (t.ink) ";font-size:17px;line-height:1.6;padding:32px 8px 8px" } {
                                 p style="margin:0 0 16px;font-style:italic;font-size:20px" { "Dear " (greeting) "," }
@@ -140,35 +147,5 @@ pub fn build(
         "Dear {greeting},\n\n{}\n\n{button}: {url}\n\nWith love,\n{names}\n\n(This link is personal to you, so please don't share it.)\n",
         lines.join("\n\n")
     );
-    Ok(Message { to, subject, html, text, attachments })
-}
-
-pub async fn send(http: &reqwest::Client, cfg: &Config, env: &Env, msg: &Message, idempotency_key: &str) -> Result<String> {
-    let key = env.resend_key.as_deref().context("RESEND_API_KEY is not set")?;
-    let from = cfg.email.from.as_deref().context("[email] from is not set in wedding.toml")?;
-    let mut body = json!({
-        "from": from,
-        "to": msg.to,
-        "subject": msg.subject,
-        "html": msg.html,
-        "text": msg.text,
-        "attachments": msg.attachments,
-    });
-    if let Some(r) = &cfg.email.reply_to {
-        body["reply_to"] = json!(r);
-    }
-    let resp = http
-        .post("https://api.resend.com/emails")
-        .bearer_auth(key)
-        .header("Idempotency-Key", idempotency_key)
-        .json(&body)
-        .send()
-        .await?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!("resend {status}: {}", text.chars().take(300).collect::<String>());
-    }
-    let id = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["id"].as_str().map(String::from)).unwrap_or_default();
-    Ok(id)
+    Ok(Message { to: to.to_string(), subject, html, text, attachments, card_png })
 }

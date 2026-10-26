@@ -17,6 +17,9 @@ REGION="${REGION:-australia-southeast1}"
 ZONE="${ZONE:-${REGION}-a}"
 VM="${VM:-rsvp}"
 MACHINE="${MACHINE:-e2-small}"       # e2-micro works with swap, but Claude Code is happier with 2 GB
+DISK_TYPE="${DISK_TYPE:-pd-balanced}" # free tier: e2-micro + pd-standard (≤30 GB) in us-west1/us-central1/us-east1
+DISK_SIZE="${DISK_SIZE:-20GB}"
+SNAPSHOTS="${SNAPSHOTS:-1}"          # daily boot-disk snapshots (small extra cost); 0 to skip
 SA="rsvp-vm"
 SA_EMAIL="${SA}@${PROJECT}.iam.gserviceaccount.com"
 LS_BUCKET="${PROJECT}-rsvp-litestream"
@@ -56,19 +59,19 @@ g compute firewall-rules describe rsvp-iap-ssh >/dev/null 2>&1 || \
   g compute firewall-rules create rsvp-iap-ssh --allow tcp:22 --target-tags rsvp --source-ranges 35.235.240.0/20
 
 # Daily disk snapshots of the boot disk (covers the journal and everything else on disk).
-g compute resource-policies describe rsvp-daily --region "$REGION" >/dev/null 2>&1 || \
+[ "$SNAPSHOTS" = "1" ] && { g compute resource-policies describe rsvp-daily --region "$REGION" >/dev/null 2>&1 || \
   g compute resource-policies create snapshot-schedule rsvp-daily --region "$REGION" \
-    --daily-schedule --start-time 16:00 --max-retention-days 21 --on-source-disk-delete keep-auto-snapshots
+    --daily-schedule --start-time 16:00 --max-retention-days 21 --on-source-disk-delete keep-auto-snapshots; }
 
 if ! g compute instances describe "$VM" --zone "$ZONE" >/dev/null 2>&1; then
   g compute instances create "$VM" --zone "$ZONE" --machine-type "$MACHINE" \
     --image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud \
-    --boot-disk-size 20GB --boot-disk-type pd-balanced \
+    --boot-disk-size "$DISK_SIZE" --boot-disk-type "$DISK_TYPE" \
     --address "$IP" --tags rsvp \
     --service-account "$SA_EMAIL" --scopes https://www.googleapis.com/auth/devstorage.read_write \
     --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
     --metadata enable-oslogin=TRUE,block-project-ssh-keys=TRUE
-  g compute disks add-resource-policies "$VM" --zone "$ZONE" --resource-policies rsvp-daily
+  [ "$SNAPSHOTS" = "1" ] && g compute disks add-resource-policies "$VM" --zone "$ZONE" --resource-policies rsvp-daily
 fi
 
 cat <<EOF

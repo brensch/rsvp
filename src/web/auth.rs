@@ -66,7 +66,7 @@ pub struct Session {
     pub csrf: String,
 }
 
-fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(super) fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -76,7 +76,7 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|kv| kv.strip_prefix(name).and_then(|r| r.strip_prefix('=')))
 }
 
-async fn session_from(st: &AppState, headers: &HeaderMap) -> anyhow::Result<Option<Session>> {
+pub(super) async fn session_from(st: &AppState, headers: &HeaderMap) -> anyhow::Result<Option<Session>> {
     let Some(raw) = cookie(headers, SESSION_COOKIE) else { return Ok(None) };
     if raw.len() > 64 {
         return Ok(None);
@@ -256,8 +256,14 @@ async fn register_page(State(st): State<AppState>, Query(q): Query<RegisterQuery
             @if invite.is_some() && role.is_none() {
                 p.error { "That invite link has expired or was already used. You can still sign up, and the couple will need to approve you." }
             }
-            @if let Some(r) = &role {
-                p.muted { "You've been invited as " strong { (r) } ". Choose the name you'll be known by, then create a passkey on this device." }
+            @if let Some((r, rel)) = &role {
+                @let what = match (r.as_str(), rel.as_str()) {
+                    ("owner", _) => "an owner".to_string(),
+                    (_, "a_parent") => format!("{}'s parent", st.cfg.couple.a_first),
+                    (_, "b_parent") => format!("{}'s parent", st.cfg.couple.b_first),
+                    _ => "a helper".to_string(),
+                };
+                p.muted { "You've been invited as " strong { (what) } ". Choose the name you'll be known by, then create a passkey on this device." }
             } @else {
                 p.muted { "Choose the name the couple will recognise, then create a passkey. They'll approve you before you can see anything." }
             }
@@ -440,11 +446,11 @@ async fn register_finish(
                     Some(code) => store::check_invite(&tx, code)?,
                     None => None,
                 };
-                let role_str = role.clone().unwrap_or_else(|| "pending".into());
+                let (role_str, relation) = role.clone().unwrap_or_else(|| ("pending".into(), String::new()));
                 let ts = now();
                 tx.execute(
-                    "INSERT INTO users (id, name, role, created_at, approved_by, approved_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![uid, name, role_str, ts, role.as_ref().map(|_| "invite"), role.as_ref().map(|_| ts.clone())],
+                    "INSERT INTO users (id, name, role, relation, created_at, approved_by, approved_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![uid, name, role_str, relation, ts, role.as_ref().map(|_| "invite"), role.as_ref().map(|_| ts.clone())],
                 )?;
                 tx.execute(
                     "INSERT INTO credentials (cred_id, user_id, passkey, created_at) VALUES (?1, ?2, ?3, ?4)",

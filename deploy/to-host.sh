@@ -35,7 +35,7 @@ id rsvp >/dev/null 2>&1 || useradd --system --gid rsvp --home-dir /var/lib/rsvp 
 install -d -o rsvp -g rsvp -m 2770 /var/lib/rsvp /var/lib/rsvp/backups
 install -d -o root -g rsvp -m 0750 /etc/rsvp
 if [ ! -f /etc/rsvp/env ]; then
-  (umask 027; printf '# RSVP_SECRET signs every guest link; keep a copy in your password manager.\nRSVP_SECRET=%s\nDISCORD_WEBHOOK_URL=\nRESEND_API_KEY=\n' \
+  (umask 027; printf '# RSVP_SECRET signs every guest link; keep a copy in your password manager.\nRSVP_SECRET=%s\nDISCORD_WEBHOOK_URL=\nGMAIL_CLIENT_ID=\nGMAIL_CLIENT_SECRET=\n' \
     "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" > /etc/rsvp/env)
   chown root:rsvp /etc/rsvp/env; chmod 0640 /etc/rsvp/env
   echo "generated /etc/rsvp/env"
@@ -59,7 +59,7 @@ cat > /tmp/rsvp.caddyfile <<EOF
 $DOMAIN {
 	encode zstd gzip
 	request_body {
-		max_size 1MB
+		max_size 150MB
 	}
 	header -Server
 	reverse_proxy 127.0.0.1:$PORT

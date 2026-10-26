@@ -44,6 +44,10 @@
       row.querySelectorAll('button[name="tier"]').forEach((b) => b.setAttribute("aria-pressed", String(Number(b.value) === data.tier)));
       row.querySelectorAll('button[name="toggle_event"]').forEach((b) => b.setAttribute("aria-pressed", String(data.events.includes(b.value))));
       row.querySelectorAll('button[name="toggle_australia"]').forEach((b) => b.setAttribute("aria-pressed", String(!!data.australia)));
+      row.querySelectorAll('button[name="toggle_unlikely"]').forEach((b) => {
+        b.setAttribute("aria-pressed", String(!!data.unlikely));
+        b.textContent = data.unlikely ? "Unlikely" : "Likely";
+      });
       row.querySelectorAll('button[name="toggle_checked"]').forEach((b) => b.setAttribute("aria-pressed", String(!!data.checked)));
       if ("checked_by" in data) row.querySelectorAll(".checked-by").forEach((el) => { el.textContent = data.checked_by; });
       form.classList.add("saved");
@@ -68,6 +72,11 @@
     sel.addEventListener("change", () => sel.form.requestSubmit()),
   );
 
+  // Clickable table rows (e.g. the by-tier table on the overview).
+  document.querySelectorAll("tr[data-href]").forEach((tr) =>
+    tr.addEventListener("click", (e) => { if (!e.target.closest("a, button, input, select")) location.assign(tr.dataset.href); }),
+  );
+
   // Close the mobile menu after navigating.
   document.querySelectorAll(".sidebar nav a").forEach((a) =>
     a.addEventListener("click", () => {
@@ -83,4 +92,59 @@
     if (url.searchParams.has(k)) { url.searchParams.delete(k); changed = true; }
   }
   if (changed) history.replaceState(null, "", url.pathname + (url.search || "") + url.hash);
+
+  // "Add person" / "Add a plus one": clone a row from its <template>, numbered new0., new1., ...
+  document.addEventListener("click", (ev) => {
+    const add = ev.target.closest("[data-add]");
+    if (add) {
+      const tpl = document.getElementById(add.dataset.add);
+      const box = add.closest("form").querySelector(".new-people");
+      const i = Number(box.dataset.next || 0);
+      box.dataset.next = i + 1;
+      box.insertAdjacentHTML("beforeend", tpl.innerHTML.replaceAll("__I__", String(i)));
+      box.lastElementChild.querySelector("input:not([type=hidden]):not([type=checkbox])")?.focus();
+      return;
+    }
+    const rm = ev.target.closest("[data-remove-row]");
+    if (rm) {
+      rm.closest(".guest-row").remove();
+    }
+  });
+
+  // Reorder people: drag the grip (mouse or touch), or focus it and use the arrow keys.
+  // Hidden inputs travel with their row, so the form submits people in the new order.
+  document.addEventListener("pointerdown", (ev) => {
+    const handle = ev.target.closest("[data-drag]");
+    if (!handle) return;
+    const row = handle.closest(".guest-row");
+    const list = row.parentElement;
+    ev.preventDefault();
+    handle.setPointerCapture(ev.pointerId);
+    row.classList.add("dragging");
+    const move = (e) => {
+      const rows = [...list.children].filter((r) => r !== row && r.classList.contains("guest-row"));
+      const before = rows.find((r) => { const b = r.getBoundingClientRect(); return e.clientY < b.top + b.height / 2; });
+      if (before) { if (row.nextElementSibling !== before) list.insertBefore(row, before); }
+      else if (list.lastElementChild !== row) list.appendChild(row);
+    };
+    const done = () => {
+      row.classList.remove("dragging");
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", done);
+      handle.removeEventListener("pointercancel", done);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", done);
+    handle.addEventListener("pointercancel", done);
+  });
+  document.addEventListener("keydown", (ev) => {
+    const handle = ev.target.closest && ev.target.closest("[data-drag]");
+    if (!handle || (ev.key !== "ArrowUp" && ev.key !== "ArrowDown")) return;
+    ev.preventDefault();
+    const row = handle.closest(".guest-row");
+    const sib = ev.key === "ArrowUp" ? row.previousElementSibling : row.nextElementSibling;
+    if (!sib || !sib.classList.contains("guest-row")) return;
+    if (ev.key === "ArrowUp") sib.before(row); else sib.after(row);
+    handle.focus();
+  });
 })();

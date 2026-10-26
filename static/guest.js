@@ -2,11 +2,14 @@
 (() => {
   "use strict";
   const blocks = document.querySelectorAll("[data-show-when]");
+  // data-show-when lists one or more radio names; show the block if any of them is "yes".
   function sync() {
     blocks.forEach((el) => {
-      const name = el.dataset.showWhen;
-      const yes = document.querySelector(`input[name="${CSS.escape(name)}"][value="yes"]`);
-      el.hidden = !(yes && yes.checked);
+      const names = el.dataset.showWhen.split(" ").filter(Boolean);
+      el.hidden = !names.some((name) => {
+        const yes = document.querySelector(`input[name="${CSS.escape(name)}"][value="yes"]`);
+        return yes && yes.checked;
+      });
     });
   }
   document.addEventListener("change", (ev) => {

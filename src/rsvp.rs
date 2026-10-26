@@ -24,8 +24,6 @@ use crate::store::{self, Guest, Household, Response};
 pub struct RsvpForm {
     pub guests: Vec<GuestAnswer>,
     #[serde(default)]
-    pub plus_ones: Vec<PlusOneAnswer>,
-    #[serde(default)]
     pub message: String,
     #[serde(default)]
     pub song: String,
@@ -42,6 +40,11 @@ pub struct GuestAnswer {
     pub events: BTreeMap<String, EventAnswer>,
     #[serde(default)]
     pub dietary: String,
+    /// Only for plus-one slots: who they're bringing.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub first_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,17 +52,6 @@ pub struct EventAnswer {
     pub attending: bool,
     #[serde(default)]
     pub meal: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlusOneAnswer {
-    pub host_id: i64,
-    pub first_name: String,
-    pub last_name: String,
-    /// Meal per meal-event the host is attending.
-    pub meals: BTreeMap<String, String>,
-    #[serde(default)]
-    pub dietary: String,
 }
 
 pub const ACCOMMODATION_OPTIONS: &[(&str, &str)] = &[
@@ -89,21 +81,16 @@ pub mod field {
     pub fn diet(gid: i64) -> String {
         format!("diet.{gid}")
     }
-    pub fn p1_first(host: i64) -> String {
-        format!("p1first.{host}")
+    /// Name fields, only shown for plus-one slots.
+    pub fn first(gid: i64) -> String {
+        format!("first.{gid}")
     }
-    pub fn p1_last(host: i64) -> String {
-        format!("p1last.{host}")
-    }
-    pub fn p1_meal(host: i64, ev: &str) -> String {
-        format!("p1meal.{host}.{ev}")
-    }
-    pub fn p1_diet(host: i64) -> String {
-        format!("p1diet.{host}")
+    pub fn last(gid: i64) -> String {
+        format!("last.{gid}")
     }
 }
 
-/// Primary (non plus-one) guests answer for themselves.
+/// Guests on the form (skips legacy plus-ones attached to a host).
 pub fn primary_guests(guests: &[Guest]) -> Vec<&Guest> {
     guests.iter().filter(|g| g.plus_one_of.is_none()).collect()
 }
@@ -112,31 +99,19 @@ pub fn primary_guests(guests: &[Guest]) -> Vec<&Guest> {
 pub fn current_values(guests: &[Guest], responses: &[Response], h: &Household) -> HashMap<String, String> {
     let mut v = HashMap::new();
     let by_key: HashMap<(i64, &str), &Response> = responses.iter().map(|r| ((r.guest_id, r.event_slug.as_str()), r)).collect();
-    for g in guests {
-        match g.plus_one_of {
-            None => {
-                for ev in &h.events {
-                    if let Some(r) = by_key.get(&(g.id, ev.as_str())) {
-                        v.insert(field::att(g.id, ev), if r.attending { "yes" } else { "no" }.into());
-                        if !r.meal.is_empty() {
-                            v.insert(field::meal(g.id, ev), r.meal.clone());
-                        }
-                    }
-                }
-                v.insert(field::diet(g.id), g.dietary.clone());
-            }
-            Some(host) => {
-                v.insert(field::p1_first(host), g.first_name.clone());
-                v.insert(field::p1_last(host), g.last_name.clone());
-                v.insert(field::p1_diet(host), g.dietary.clone());
-                for ev in &h.events {
-                    if let Some(r) = by_key.get(&(g.id, ev.as_str())) {
-                        if !r.meal.is_empty() {
-                            v.insert(field::p1_meal(host, ev), r.meal.clone());
-                        }
-                    }
+    for g in primary_guests(guests) {
+        for ev in &h.events {
+            if let Some(r) = by_key.get(&(g.id, ev.as_str())) {
+                v.insert(field::att(g.id, ev), if r.attending { "yes" } else { "no" }.into());
+                if !r.meal.is_empty() {
+                    v.insert(field::meal(g.id, ev), r.meal.clone());
                 }
             }
+        }
+        v.insert(field::diet(g.id), g.dietary.clone());
+        if g.is_plus_one() {
+            v.insert(field::first(g.id), g.first_name.clone());
+            v.insert(field::last(g.id), g.last_name.clone());
         }
     }
     v.insert("message".into(), h.rsvp_message.clone());
@@ -163,6 +138,7 @@ pub fn parse(
     let events: Vec<_> = h.events.iter().filter_map(|e| cfg.event(e)).collect();
 
     for g in primary_guests(guests) {
+        let who = if g.unnamed_plus_one() { "your plus one".to_string() } else { g.first_name.clone() };
         let mut answers = BTreeMap::new();
         for ev in events.iter().filter(|e| e.dated() && g.invited(h, &e.slug)) {
             let key = field::att(g.id, &ev.slug);
@@ -170,7 +146,7 @@ pub fn parse(
                 Some("yes") => true,
                 Some("no") => false,
                 _ => {
-                    errors.insert(key, format!("Let us know if {} can make the {}.", g.first_name, ev.name.to_lowercase()));
+                    errors.insert(key, format!("Let us know if {who} can make the {}.", ev.name.to_lowercase()));
                     continue;
                 }
             };
@@ -180,47 +156,25 @@ pub fn parse(
                 let mk = field::meal(g.id, &ev.slug);
                 meal = values.get(&mk).cloned().unwrap_or_default();
                 if !offered.iter().any(|m| m.slug == meal) {
-                    errors.insert(mk, format!("Choose a meal for {}.", g.first_name));
+                    errors.insert(mk, format!("Choose a meal for {who}."));
                 }
             }
             answers.insert(ev.slug.clone(), EventAnswer { attending, meal });
         }
-        let dietary = clip(values.get(&field::diet(g.id)), 500);
+        // Dietary needs only matter for people coming to something.
+        let dietary = if answers.values().any(|a| a.attending) { clip(values.get(&field::diet(g.id)), 500) } else { String::new() };
 
-        if g.plus_one_allowed {
-            let first = clip(values.get(&field::p1_first(g.id)), 80);
-            let last = clip(values.get(&field::p1_last(g.id)), 80);
-            let host_attending: Vec<_> = answers.iter().filter(|(_, a)| a.attending).map(|(k, _)| k.clone()).collect();
-            if !first.is_empty() || !last.is_empty() {
-                if first.is_empty() {
-                    errors.insert(field::p1_first(g.id), "Your guest's first name, please.".into());
-                }
-                if host_attending.is_empty() {
-                    errors.insert(field::p1_first(g.id), format!("{} isn't attending, so a plus-one can't either.", g.first_name));
-                }
-                let mut meals = BTreeMap::new();
-                for slug in &host_attending {
-                    let ev = cfg.event(slug).unwrap();
-                    let offered = meals_for(cfg, false);
-                    if ev.meal && !offered.is_empty() {
-                        let mk = field::p1_meal(g.id, slug);
-                        let m = values.get(&mk).cloned().unwrap_or_default();
-                        if !offered.iter().any(|o| o.slug == m) {
-                            errors.insert(mk, "Choose a meal for your guest.".into());
-                        }
-                        meals.insert(slug.clone(), m);
-                    }
-                }
-                form.plus_ones.push(PlusOneAnswer {
-                    host_id: g.id,
-                    first_name: first,
-                    last_name: last,
-                    meals,
-                    dietary: clip(values.get(&field::p1_diet(g.id)), 500),
-                });
+        // A plus-one slot tells us who they are; we need a name if they're coming.
+        let (mut first_name, mut last_name) = (String::new(), String::new());
+        if g.is_plus_one() {
+            first_name = clip(values.get(&field::first(g.id)), 80);
+            last_name = clip(values.get(&field::last(g.id)), 80);
+            if first_name.is_empty() && answers.values().any(|a| a.attending) {
+                errors.insert(field::first(g.id), "What's your plus one's name?".into());
             }
         }
-        form.guests.push(GuestAnswer { guest_id: g.id, name: g.full_name(), events: answers, dietary });
+        let name = if first_name.is_empty() { g.full_name() } else { format!("{first_name} {last_name}").trim().to_string() };
+        form.guests.push(GuestAnswer { guest_id: g.id, name, events: answers, dietary, first_name, last_name });
     }
 
     form.message = clip(values.get("message"), 2000);
@@ -305,46 +259,17 @@ pub fn apply_entry(conn: &Connection, cfg: Option<&Config>, entry: &Entry, notif
                 upsert(g.guest_id, ev, a.attending, if a.attending { &a.meal } else { "" })?;
             }
             tx.execute("UPDATE guests SET dietary = ?1, updated_at = ?2 WHERE id = ?3", params![g.dietary, ts, g.guest_id])?;
-        }
-
-        // Plus-ones: one guest row per host, created/updated/archived to match the form.
-        let hosts: Vec<i64> = store::guests_for(&tx, h.id)?.iter().filter(|g| g.plus_one_allowed).map(|g| g.id).collect();
-        for host in hosts {
-            let existing: Option<i64> = tx
-                .query_row("SELECT id FROM guests WHERE plus_one_of = ?1 AND archived_at IS NULL", [host], |r| r.get(0))
-                .ok();
-            let host_answer = form.guests.iter().find(|g| g.guest_id == host);
-            match (form.plus_ones.iter().find(|p| p.host_id == host), existing) {
-                (Some(p), existing) => {
-                    let pid = match existing {
-                        Some(pid) => {
-                            tx.execute(
-                                "UPDATE guests SET first_name = ?1, last_name = ?2, dietary = ?3, updated_at = ?4 WHERE id = ?5",
-                                params![p.first_name, p.last_name, p.dietary, ts, pid],
-                            )?;
-                            pid
-                        }
-                        None => {
-                            tx.execute(
-                                "INSERT INTO guests (household_id, first_name, last_name, dietary, plus_one_of, sort, created_at, updated_at)
-                                 VALUES (?1, ?2, ?3, ?4, ?5, 1000, ?6, ?6)",
-                                params![h.id, p.first_name, p.last_name, p.dietary, host, ts],
-                            )?;
-                            tx.last_insert_rowid()
-                        }
-                    };
-                    for ev in &h.events {
-                        let attending = host_answer.and_then(|a| a.events.get(ev)).is_some_and(|a| a.attending);
-                        let meal = p.meals.get(ev).cloned().unwrap_or_default();
-                        upsert(pid, ev, attending, &meal)?;
-                    }
-                }
-                (None, Some(pid)) => {
-                    tx.execute("UPDATE guests SET archived_at = ?1, updated_at = ?1 WHERE id = ?2", params![ts, pid])?;
-                }
-                (None, None) => {}
+            if !g.first_name.is_empty() {
+                // Only plus-one slots send a name.
+                tx.execute(
+                    "UPDATE guests SET first_name = ?1, last_name = ?2 WHERE id = ?3 AND household_id = ?4 AND plus_one_label <> ''",
+                    params![g.first_name, g.last_name, g.guest_id, h.id],
+                )?;
             }
         }
+
+        // A plus one who gave their name joins the household's name.
+        store::refresh_name(&tx, &format!("guest:{}", h.id), h.id)?;
 
         tx.execute(
             "UPDATE households SET rsvp_at = ?1, rsvp_submission = ?2, rsvp_message = ?3, rsvp_song = ?4,
@@ -384,10 +309,6 @@ pub fn summary(cfg: &Config, h: &Household, form: &RsvpForm, first: bool) -> Str
             out.push_str(&format!("  ↳ dietary: {}\n", g.dietary));
         }
     }
-    for p in &form.plus_ones {
-        let meals: Vec<String> = p.meals.values().map(|m| meal_name(m)).collect();
-        out.push_str(&format!("• ➕ {} {} {}\n", p.first_name, p.last_name, if meals.is_empty() { String::new() } else { format!("({})", meals.join(", ")) }));
-    }
     if !form.song.is_empty() {
         out.push_str(&format!("🎵 {}\n", form.song));
     }
@@ -425,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_journal_replay_and_plus_ones() {
+    fn submit_journal_replay_and_plus_one_slots() {
         let cfg = cfg();
         let db = crate::store::tests::mem();
         let dir = std::env::temp_dir().join(format!("rsvp-j-{}", uuid::Uuid::new_v4()));
@@ -434,8 +355,9 @@ mod tests {
         db.with(|c| {
             let input = HouseholdInput {
                 guests: vec![
-                    GuestInput { first_name: Some("Jane".into()), plus_one_allowed: Some(true), ..Default::default() },
+                    GuestInput { first_name: Some("Jane".into()), ..Default::default() },
                     GuestInput { first_name: Some("Tom".into()), is_child: Some(true), ..Default::default() },
+                    GuestInput { plus_one_label: Some("Jane's plus one".into()), ..Default::default() },
                 ],
                 events: Some(vec!["ceremony".into(), "reception".into()]),
                 ..Default::default()
@@ -443,31 +365,39 @@ mod tests {
             let hid = store::create_household(c, "t", &[3; 32], &input, &[])?;
             let h = store::must_household(c, hid)?;
             let gs = store::guests_for(c, hid)?;
-            let (jane, tom) = (gs[0].id, gs[1].id);
+            let (jane, tom, slot) = (gs[0].id, gs[1].id, gs[2].id);
+            assert_eq!(gs[2].full_name(), "Jane's plus one");
+            assert!(gs[2].unnamed_plus_one());
 
             // Missing answers are reported, not silently accepted.
             let empty = HashMap::new();
             let errs = parse(&cfg, &h, &gs, &empty).unwrap_err();
-            assert_eq!(errs.len(), 4);
+            assert_eq!(errs.len(), 6);
 
             let mut v: HashMap<String, String> = HashMap::new();
-            for g in [jane, tom] {
+            for g in [jane, tom, slot] {
                 v.insert(field::att(g, "ceremony"), "yes".into());
                 v.insert(field::att(g, "reception"), "yes".into());
             }
             v.insert(field::meal(jane, "reception"), "fish".into());
             v.insert(field::meal(tom, "reception"), "kids".into());
-            v.insert(field::p1_first(jane), "Pat".into());
-            v.insert(field::p1_meal(jane, "reception"), "beef".into());
+            v.insert(field::meal(slot, "reception"), "beef".into());
             v.insert("message".into(), "Can't wait!".into());
+            // A plus one who is coming needs a name.
+            let errs = parse(&cfg, &h, &gs, &v).unwrap_err();
+            assert!(errs.contains_key(&field::first(slot)));
+            v.insert(field::first(slot), "Pat".into());
+            v.insert(field::last(slot), "Lee".into());
             let form = parse(&cfg, &h, &gs, &v).expect("valid form");
             let id = submit(c, &journal, &cfg, &h, &form, "ip", "ua")?;
 
             let gs = store::guests_for(c, hid)?;
-            assert_eq!(gs.len(), 3, "plus-one created");
-            let pat = gs.iter().find(|g| g.plus_one_of == Some(jane)).unwrap();
+            assert_eq!(gs.len(), 3, "no extra rows");
+            let pat = gs.iter().find(|g| g.id == slot).unwrap();
+            assert_eq!(pat.full_name(), "Pat Lee");
+            assert!(pat.is_plus_one(), "still a plus one once named");
             let resp = store::responses_for(c, hid)?;
-            assert!(resp.iter().any(|r| r.guest_id == pat.id && r.event_slug == "reception" && r.attending && r.meal == "beef"));
+            assert!(resp.iter().any(|r| r.guest_id == slot && r.event_slug == "reception" && r.attending && r.meal == "beef"));
             assert_eq!(store::must_household(c, hid)?.rsvp_message, "Can't wait!");
             assert!(c.execute("UPDATE submissions SET payload = '{}'", []).is_err(), "submissions are append-only");
 
@@ -478,17 +408,18 @@ mod tests {
             assert!(journal_missing(c, &journal)?.is_empty());
             assert!(!apply(c, &cfg, &entries[0], false)?);
 
-            // Second submission: Jane declines the reception, drops the plus-one.
+            // Second submission: Jane declines the reception; the plus one can't come and needs no name.
             let h = store::must_household(c, hid)?;
             let gs = store::guests_for(c, hid)?;
             v.insert(field::att(jane, "reception"), "no".into());
-            v.remove(&field::p1_first(jane));
+            v.insert(field::att(slot, "ceremony"), "no".into());
+            v.insert(field::att(slot, "reception"), "no".into());
+            v.remove(&field::first(slot));
             let form = parse(&cfg, &h, &gs, &v).expect("valid");
             submit(c, &journal, &cfg, &h, &form, "ip", "ua")?;
-            let gs = store::guests_for(c, hid)?;
-            assert_eq!(gs.len(), 2, "plus-one archived");
             let resp = store::responses_for(c, hid)?;
             assert!(resp.iter().any(|r| r.guest_id == jane && r.event_slug == "reception" && !r.attending && r.meal.is_empty()));
+            assert!(resp.iter().any(|r| r.guest_id == slot && r.event_slug == "reception" && !r.attending));
 
             // Discord notifications were queued in the same transactions.
             let n: i64 = c.query_row("SELECT COUNT(*) FROM outbox WHERE kind = 'discord'", [], |r| r.get(0))?;
@@ -511,7 +442,7 @@ mod tests {
             let g = store::guests_for(c, hid)?[0].id;
             // Simulate a crash after the journal write but before the DB commit.
             let form = RsvpForm {
-                guests: vec![GuestAnswer { guest_id: g, name: "Ann".into(), events: [("ceremony".to_string(), EventAnswer { attending: true, meal: String::new() })].into(), dietary: String::new() }],
+                guests: vec![GuestAnswer { guest_id: g, name: "Ann".into(), events: [("ceremony".to_string(), EventAnswer { attending: true, meal: String::new() })].into(), dietary: String::new(), first_name: String::new(), last_name: String::new() }],
                 ..Default::default()
             };
             journal.append(&Entry { id: "lost-1".into(), kind: String::new(), household_id: hid, received_at: crate::db::now(), ip_hash: String::new(), user_agent: String::new(), payload: serde_json::to_value(&form)? })?;
@@ -521,38 +452,6 @@ mod tests {
             }
             assert!(journal_missing(c, &journal)?.is_empty());
             assert!(store::responses_for(c, hid)?.iter().any(|r| r.attending));
-            Ok(())
-        })
-        .unwrap();
-    }
-}
-
-#[cfg(test)]
-mod exclusion_tests {
-    use super::*;
-    use crate::store::{GuestInput, HouseholdInput};
-
-    #[test]
-    fn excluded_people_are_not_asked() {
-        let cfg: Config = toml::from_str(include_str!("../config/wedding.example.toml")).unwrap();
-        let db = crate::store::tests::mem();
-        db.with(|c| {
-            let kid: GuestInput = serde_json::from_str(r#"{"first_name":"Kid","is_child":true,"events":[]}"#)?;
-            let input = HouseholdInput {
-                guests: vec![GuestInput { first_name: Some("Mum".into()), ..Default::default() }, kid],
-                events: Some(vec!["ceremony".into(), "reception".into()]),
-                ..Default::default()
-            };
-            let hid = store::create_household(c, "t", &[3; 32], &input, &[])?;
-            let h = store::must_household(c, hid)?;
-            let gs = store::guests_for(c, hid)?;
-            let errs = parse(&cfg, &h, &gs, &HashMap::new()).unwrap_err();
-            assert_eq!(errs.len(), 2, "only Mum's two events are asked: {errs:?}");
-            // Clearing the override with null re-invites the kid.
-            let clear: GuestInput = serde_json::from_str(r#"{"events":null}"#)?;
-            store::update_guest(c, "t", gs[1].id, &clear)?;
-            let gs = store::guests_for(c, hid)?;
-            assert_eq!(parse(&cfg, &h, &gs, &HashMap::new()).unwrap_err().len(), 4);
             Ok(())
         })
         .unwrap();

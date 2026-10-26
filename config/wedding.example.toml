@@ -1,5 +1,5 @@
 # Wedding configuration. Copy to /etc/rsvp/wedding.toml on the server.
-# Secrets (link-signing key, Discord webhook, Resend key) live in /etc/rsvp/env, never here.
+# Secrets (link-signing key, Discord webhook, Gmail OAuth client) live in /etc/rsvp/env, never here.
 
 [couple]
 a_first = "Alex"
@@ -110,9 +110,9 @@ ask_transport = true
 transport_question = "Would you like a seat on the shuttle between ceremony and reception?"
 
 [email]
-# Must be on a domain verified in Resend.
-from = "Alex & Sam <hello@mail.wedding.example.com>"
-reply_to = "alexandsam@example.com"
+# Emails are sent from a Gmail account connected in Settings (send-only access).
+from = "Alex & Sam"                  # display name
+account = "alexandsam@example.com"   # only this Gmail account can be connected
 
 [backup]
 bucket = "your-project-rsvp-snapshots"     # daily snapshots (retention-locked bucket)

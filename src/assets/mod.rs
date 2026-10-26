@@ -30,12 +30,13 @@ static FONTS: &[&[u8]] = &[
     include_bytes!("../../fonts/PinyonScript.ttf"),
 ];
 
+/// Fonts for the websites: WOFF2, cut down to Latin text (fonts/web, made from the TTFs with
+/// fonttools' pyftsubset). The version is in the name so they can be cached forever.
 pub static WEB_FONTS: &[(&str, &[u8])] = &[
-    ("CormorantGaramond.ttf", include_bytes!("../../fonts/CormorantGaramond.ttf")),
-    ("CormorantGaramond-Italic.ttf", include_bytes!("../../fonts/CormorantGaramond-Italic.ttf")),
-    ("EBGaramond.ttf", include_bytes!("../../fonts/EBGaramond.ttf")),
-    ("EBGaramond-Italic.ttf", include_bytes!("../../fonts/EBGaramond-Italic.ttf")),
-    ("PinyonScript.ttf", include_bytes!("../../fonts/PinyonScript.ttf")),
+    ("CormorantGaramond-v2.woff2", include_bytes!("../../fonts/web/CormorantGaramond.woff2")),
+    ("CormorantGaramond-Italic-v2.woff2", include_bytes!("../../fonts/web/CormorantGaramond-Italic.woff2")),
+    ("EBGaramond-v2.woff2", include_bytes!("../../fonts/web/EBGaramond.woff2")),
+    ("EBGaramond-Italic-v2.woff2", include_bytes!("../../fonts/web/EBGaramond-Italic.woff2")),
 ];
 
 static TEMPLATES: &[(&str, &str)] = &[
@@ -160,10 +161,11 @@ impl Renderer {
         self.compile_named(kind.slug(), data, extra)
     }
 
-    /// The wreath monogram as SVG for the website.
-    pub fn monogram_svg(&self, cfg: &Config) -> Result<String> {
+    /// The emblem and initials as a PNG for the website header, `width_px` pixels wide.
+    pub fn monogram_png(&self, cfg: &Config, width_px: f64) -> Result<Vec<u8>> {
         let doc = self.compile_named("monogram", &base_data(cfg, Layout::Card)?, HashMap::new())?;
-        to_svg(&doc, 0)
+        let w = doc.pages().first().map(|p| p.frame.width().to_pt()).unwrap_or(1.0);
+        to_png(&doc, 0, width_px / w)
     }
 
     fn compile_named(&self, name: &str, data: &Value, extra: HashMap<String, Vec<u8>>) -> Result<PagedDocument> {
@@ -172,6 +174,9 @@ impl Renderer {
         files.insert(main, Bytes::from_string(self.template_source(name)?));
         files.insert(file_id("/lib.typ"), Bytes::from_string(self.template_source("lib")?));
         files.insert(file_id("/data.json"), Bytes::new(serde_json::to_vec(data)?));
+        for (path, bytes) in ART {
+            files.insert(file_id(path), Bytes::new(bytes.to_vec()));
+        }
         for (path, bytes) in extra {
             files.insert(file_id(&path), Bytes::new(bytes));
         }
@@ -193,6 +198,9 @@ impl Renderer {
         }
     }
 }
+
+/// Artwork the templates draw on (tools/draw_emblem.py makes the emblem).
+const ART: &[(&str, &[u8])] = &[("/art/emblem.svg", include_bytes!("../../templates/art/emblem.svg"))];
 
 fn file_id(path: &str) -> FileId {
     FileId::new(RootedPath::new(VirtualRoot::Project, VirtualPath::new(path).expect("valid virtual path")))
@@ -256,11 +264,6 @@ pub fn to_png(doc: &PagedDocument, page: usize, pixel_per_pt: f64) -> Result<Vec
     let page = doc.pages().get(page).ok_or_else(|| anyhow!("page {page} out of range"))?;
     let opts = typst_render::RenderOptions { pixel_per_pt: typst::utils::Scalar::new(pixel_per_pt), render_bleed: false };
     typst_render::render(page, &opts).encode_png().map_err(|e| anyhow!("png: {e}"))
-}
-
-pub fn to_svg(doc: &PagedDocument, page: usize) -> Result<String> {
-    let page = doc.pages().get(page).ok_or_else(|| anyhow!("page {page} out of range"))?;
-    Ok(typst_svg::svg(page, &typst_svg::SvgOptions { render_bleed: false, pretty: false }))
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +330,7 @@ pub fn base_data(cfg: &Config, layout: Layout) -> Result<Value> {
             "location": cfg.wedding.location,
             "deadline": words::date_medium(deadline),
             "std_note": cfg.wedding.save_the_date_note,
+            "celebration_note": cfg.wedding.celebration_note,
             "return_address": cfg.wedding.return_address,
             "site": site_host(cfg),
             "first_event": {
@@ -439,7 +443,7 @@ pub fn report_data(
                 }
             })
             .collect();
-        rows.push(json!({"household": h.name, "name": g.full_name(), "plus_one": g.plus_one_of.is_some(), "child": g.is_child, "cells": cells, "dietary": g.dietary}));
+        rows.push(json!({"household": h.name, "name": g.full_name(), "plus_one": g.plus_one_of.is_some() || g.is_plus_one(), "child": g.is_child, "cells": cells, "dietary": g.dietary}));
     }
     data["report"] = json!({
         "events": cfg.events.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),

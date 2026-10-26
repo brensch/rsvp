@@ -26,18 +26,25 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/households", get(households))
         .route("/admin/households/new", get(new_household).post(create_household))
         .route("/admin/households/{id}", get(household).post(update_household))
-        .route("/admin/households/{id}/guests", post(add_guest))
         .route("/admin/households/{id}/quick", post(quick_update))
+        .route("/admin/households/{id}/request", post(review_request))
         .route("/admin/households/{id}/archive", post(archive_household))
         .route("/admin/households/{id}/rotate", post(rotate_link))
         .route("/admin/households/{id}/send", post(send_one))
         .route("/admin/guests", get(guests))
-        .route("/admin/guests/{id}", post(update_guest))
-        .route("/admin/guests/{id}/archive", post(archive_guest))
+        .route("/admin/website", get(website).post(create_page))
+        .route("/admin/website/{slug}", get(edit_page).post(save_page))
+        .route("/admin/website/{slug}/delete", post(delete_page))
+        .route("/admin/gallery", get(gallery))
+        .route("/admin/gallery/upload", post(gallery_upload).layer(axum::extract::DefaultBodyLimit::max(150 * 1024 * 1024)))
+        .route("/admin/gallery/{id}", post(gallery_photo))
         .route("/admin/stationery", get(stationery))
         .route("/admin/stationery/{file}", get(stationery_file))
         .route("/admin/send", get(send_page).post(send_bulk))
         .route("/admin/send/test", post(send_test))
+        .route("/admin/gmail/connect", get(gmail_connect))
+        .route("/admin/gmail/callback", get(gmail_callback))
+        .route("/admin/gmail/disconnect", post(gmail_disconnect))
         .route("/admin/users", get(users).post(user_role))
         .route("/admin/users/invite", post(create_invite))
         .route("/admin/settings", get(settings).post(update_settings))
@@ -72,7 +79,16 @@ fn flash_text(code: Option<&str>) -> Option<&'static str> {
         "tested" => "Test notification queued.",
         "signedout" => "Other sessions signed out.",
         "noemail" => "That household has no email address.",
+        "uploaded" => "Photos added.",
+        "requested" => "Thanks! Your request was sent to the couple to approve.",
+        "approved" => "Approved and added to the guest list.",
+        "declined" => "Request declined.",
+        "owners-only" => "Only the couple can add people to an existing household.",
+        "page-saved" => "Page saved.",
+        "page-deleted" => "Page deleted.",
         "error" => "Something about that didn't work. Check the values and try again.",
+        "gmail-connected" => "Gmail connected. Emails will be sent from it.",
+        "gmail-disconnected" => "Gmail disconnected. Nothing can be emailed until it's connected again.",
         _ => return None,
     })
 }
@@ -138,10 +154,10 @@ fn status_badge(s: Status) -> Markup {
 
 fn household_input_from(f: &F, cfg: &Config) -> HouseholdInput {
     HouseholdInput {
-        name: f.get("name"),
-        greeting: f.get("greeting"),
-        envelope: f.get("envelope"),
-        email: f.get("email"),
+        name: None,
+        greeting: None,
+        envelope: None,
+        email: None,
         addr1: f.get("addr1"),
         addr2: f.get("addr2"),
         city: f.get("city"),
@@ -151,36 +167,140 @@ fn household_input_from(f: &F, cfg: &Config) -> HouseholdInput {
         side: f.get("side"),
         tier: f.get("tier").and_then(|t| t.parse().ok()),
         australia: f.check("australia_present").then(|| f.check("australia")),
+        unlikely: f.check("unlikely_present").then(|| f.check("unlikely")),
         tags: f.get("tags"),
         events: Some(f.all("events").into_iter().filter(|e| cfg.event(e).is_some()).collect()),
         notes: f.get("notes"),
         guests: vec![],
+        added_by: None,
     }
 }
 
-/// `household_events`: the events this person could be invited to. Only read when the
-/// form rendered per-person event checkboxes (marked by `{prefix}ev_present`).
-fn guest_input_from(f: &F, prefix: &str, household_events: &[String]) -> GuestInput {
+fn guest_input_from(f: &F, prefix: &str) -> GuestInput {
     let g = |k: &str| f.get(&format!("{prefix}{k}"));
-    let events = f.check(&format!("{prefix}ev_present")).then(|| {
-        let picked: Vec<String> = f.all(&format!("{prefix}ev")).into_iter().filter(|e| household_events.contains(e)).collect();
-        // Everything ticked means "same as the household".
-        if picked.len() == household_events.len() { None } else { Some(picked) }
-    });
     GuestInput {
-        events,
         first_name: g("first_name"),
         last_name: g("last_name"),
         email: g("email"),
         is_child: Some(f.check(&format!("{prefix}is_child"))),
-        plus_one_allowed: Some(f.check(&format!("{prefix}plus_one_allowed"))),
+        plus_one_label: None,
         dietary: g("dietary"),
         notes: g("notes"),
         sort: None,
     }
 }
 
+/// "Ben's plus one" (then "Ben's second plus one", ...): named after the one person in the
+/// household, else the household. `n` is which plus one this is, from 1.
+fn plus_one_label(h: &Household, guests: &[Guest], n: usize) -> String {
+    let people: Vec<String> = guests.iter().filter(|g| g.plus_one_of.is_none() && !g.is_plus_one()).map(|g| g.first_name.clone()).collect();
+    plus_one_name(&people, &h.name, n)
+}
+
+fn plus_one_name(first_names: &[String], household: &str, n: usize) -> String {
+    let host = match first_names {
+        [one] => one.clone(),
+        _ if !household.trim().is_empty() => household.trim().to_string(),
+        [] => "Their".to_string(),
+        [init @ .., last] => format!("{} & {}", init.join(", "), last),
+    };
+    const NTH: [&str; 9] = ["", "second ", "third ", "fourth ", "fifth ", "sixth ", "seventh ", "eighth ", "ninth "];
+    match NTH.get(n.saturating_sub(1)) {
+        Some(nth) => format!("{host}'s {nth}plus one"),
+        None => format!("{host}'s plus one {n}"),
+    }
+}
+
+/// Prefixes of the rows added with "Add person" / "Add a plus one" (`new0.`, `new1.`, ...), in order.
+fn new_rows(f: &F) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for (k, _) in &f.1 {
+        let Some(rest) = k.strip_prefix("new") else { continue };
+        let Some((i, _)) = rest.split_once('.') else { continue };
+        if i.parse::<u16>().is_ok() {
+            let p = format!("new{i}.");
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// A new person row, or None if it was left blank. Plus-one rows may have no name.
+fn new_row_input(f: &F, p: &str) -> Option<(GuestInput, bool)> {
+    let gi = guest_input_from(f, p);
+    let slot = f.check(&format!("{p}plus_one"));
+    (slot || gi.first_name.as_deref().is_some_and(|n| !n.is_empty())).then_some((gi, slot))
+}
+
+/// "Add person" and "Add a plus one" buttons. admin.js clones the rows from the `<template>`s
+/// (named `new{i}.`); `start` blank person rows are shown up front. `plus_one` = the label to
+/// show, or None to leave the plus-one button out.
+fn add_people(plus_one: Option<&str>, start: usize) -> Markup {
+    html! {
+        div.new-people.sortable data-next=(start) {
+            @for i in 0..start { (new_person_row(&format!("new{i}."))) }
+        }
+        template #tpl-person { (new_person_row("new__I__.")) }
+        @if let Some(label) = plus_one {
+            template #tpl-plus-one {
+                div.guest-row.add.plus-one-row {
+                    (drag_handle())
+                    input type="hidden" name="new__I__.plus_one" value="1";
+                    p.span-all { span.tag { "+1" } " " (label) ". Add their name if you know it; otherwise they'll tell us on their RSVP." }
+                    input name="new__I__.first_name" placeholder="First (if known)" aria-label="First name" maxlength="80";
+                    input name="new__I__.last_name" placeholder="Last" aria-label="Last name" maxlength="80";
+                    button.link-button type="button" data-remove-row { "Remove" }
+                }
+            }
+        }
+        div.add-buttons {
+            button.button type="button" data-add="tpl-person" { "+ Add person" }
+            @if plus_one.is_some() { button.button type="button" data-add="tpl-plus-one" { "+ Add a plus one" } }
+        }
+    }
+}
+
+/// Grip for reordering people (admin.js: drag, or arrow keys when focused).
+fn drag_handle() -> Markup {
+    html! { button.drag-handle type="button" data-drag aria-label="Drag to reorder, or use the arrow keys" title="Drag to reorder" { "⠿" } }
+}
+
+fn new_person_row(p: &str) -> Markup {
+    html! {
+        div.guest-row.add {
+            (drag_handle())
+            (guest_fields(p, None))
+            input name={ (p) "dietary" } placeholder="Dietary" aria-label="Dietary" maxlength="500";
+            input name={ (p) "notes" } placeholder="Notes" aria-label="Notes" maxlength="2000";
+            button.link-button type="button" data-remove-row { "Remove" }
+        }
+    }
+}
+
+/// How a team member is shown as "added by": "Brend", "Julie (Alyssa's parent)", "Sam (helper)".
+fn person_label(cfg: &Config, u: &store::User) -> String {
+    match u.access() {
+        "owner" => u.name.clone(),
+        "a_parent" => format!("{} ({}'s parent)", u.name, cfg.couple.a_first),
+        "b_parent" => format!("{} ({}'s parent)", u.name, cfg.couple.b_first),
+        _ => format!("{} (helper)", u.name),
+    }
+}
+
+fn access_label(cfg: &Config, access: &str) -> String {
+    match access {
+        "owner" => "Owner".into(),
+        "a_parent" => format!("{}'s parent", cfg.couple.a_first),
+        "b_parent" => format!("{}'s parent", cfg.couple.b_first),
+        "helper" => "Helper".into(),
+        other => other.to_string(),
+    }
+}
+
 /// Apply a household/guest change as the signed-in user. Returns (flash code, created id).
+/// Owners add households directly; anyone else's new household becomes a request.
 async fn apply_change(
     st: &AppState,
     s: &Session,
@@ -189,15 +309,24 @@ async fn apply_change(
     payload: serde_json::Value,
 ) -> anyhow::Result<(&'static str, Option<i64>)> {
     let user = s.user.clone();
+    let label = person_label(&st.cfg, &user);
     let (secret, defaults, valid) = (st.env.secret.clone(), default_events(&st.cfg), event_slugs(&st.cfg));
     st.db
         .call(move |c| {
             let actor = user.actor();
             let created = match kind {
                 "household.create" => {
-                    let input: HouseholdInput = serde_json::from_value(payload)?;
+                    let mut input: HouseholdInput = serde_json::from_value(payload)?;
                     input.validate(&valid)?;
-                    Some(store::create_household(c, &actor, &secret, &input, &defaults)?)
+                    input.added_by = None;
+                    let request = !user.is_owner();
+                    let id = store::create_household_as(c, &actor, &label, request, &secret, &input, &defaults)?;
+                    if request {
+                        let h = store::must_household(c, id)?;
+                        store::enqueue(c, "discord", &json!({"type": "alert", "text": format!("📝 **{label}** asked to add **{}** to the guest list. Approve or decline it on the Households page.", h.name)}))?;
+                        return Ok(("requested", Some(id)));
+                    }
+                    Some(id)
                 }
                 "household.update" => {
                     let input: HouseholdInput = serde_json::from_value(payload)?;
@@ -205,7 +334,12 @@ async fn apply_change(
                     store::update_household(c, &actor, target.unwrap(), &input)?;
                     None
                 }
-                "guest.create" => Some(store::create_guest(c, &actor, target.unwrap(), &serde_json::from_value(payload)?)?),
+                "guest.create" => {
+                    if !user.is_owner() {
+                        return Err(anyhow!("only the couple can add people to an existing household"));
+                    }
+                    Some(store::create_guest(c, &actor, target.unwrap(), &serde_json::from_value(payload)?)?)
+                }
                 "guest.update" => {
                     store::update_guest(c, &actor, target.unwrap(), &serde_json::from_value(payload)?)?;
                     None
@@ -225,13 +359,25 @@ struct Snapshot {
     households: Vec<Household>,
     guests: Vec<Guest>,
     responses: HashMap<(i64, String), Resp>,
+    /// Emails sent/opened per (household, kind).
+    mail: HashMap<(i64, String), store::MailStat>,
 }
 
 impl Snapshot {
     async fn load(st: &AppState) -> anyhow::Result<Self> {
         st.db
-            .call(|c| Ok(Snapshot { households: store::list_households(c, false)?, guests: store::all_guests(c)?, responses: store::all_responses(c)? }))
+            .call(|c| {
+                Ok(Snapshot {
+                    households: store::list_households(c, false)?,
+                    guests: store::all_guests(c)?,
+                    responses: store::all_responses(c)?,
+                    mail: store::mail_stats(c)?,
+                })
+            })
             .await
+    }
+    fn mail(&self, hid: i64, kind: &str) -> Option<&store::MailStat> {
+        self.mail.get(&(hid, kind.to_string()))
     }
     fn guests_of(&self, hid: i64) -> Vec<Guest> {
         self.guests.iter().filter(|g| g.household_id == hid).cloned().collect()
@@ -241,18 +387,27 @@ impl Snapshot {
     }
 }
 
+/// Bar widths come from CSS classes (`w0` … `w100` in 5% steps): the CSP forbids inline styles.
+fn pct_class(pct: usize) -> String {
+    let p = pct.min(100);
+    // Round to the nearest 5, but never show an empty bar for a non-zero value.
+    let step = if p > 0 && p < 5 { 5 } else { (p + 2) / 5 * 5 };
+    format!("w{step}")
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard
 
 async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Query<Flash>) -> AppResult {
     let snap = Snapshot::load(&st).await?;
-    let (phase, recent, outbox_failed, last_backup, missing_journal) = {
+    let (phase, recent, outbox_failed, last_backup, missing_journal, pending_requests) = {
         let journal = st.journal.clone();
         st.db
             .call(move |c| {
                 let failed: i64 = c.query_row("SELECT COUNT(*) FROM outbox WHERE failed_at IS NOT NULL", [], |r| r.get(0))?;
                 let missing = crate::rsvp::journal_missing(c, &journal)?.len();
-                Ok((store::phase(c)?, store::submissions(c, None, 8)?, failed, store::setting(c, "last_backup_at")?, missing))
+                let requests = store::pending_requests(c)?.len();
+                Ok((store::phase(c)?, store::submissions(c, None, 8)?, failed, store::setting(c, "last_backup_at")?, missing, requests))
             })
             .await?
     };
@@ -267,7 +422,79 @@ async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Que
     let names: HashMap<i64, &str> = snap.households.iter().map(|h| (h.id, h.name.as_str())).collect();
     let by_h: HashMap<i64, &Household> = snap.households.iter().map(|h| (h.id, h)).collect();
 
+    // Per-tier progress. Attendance is for the main event ("wedding", else the first event).
+    let main_ev = cfg.event("wedding").or(cfg.events.first());
+    struct TierRow {
+        label: String,
+        href: String,
+        households: usize,
+        people: usize,
+        /// People in households not marked unlikely to come.
+        likely: usize,
+        likely_href: String,
+        address: usize,
+        checked: usize,
+        opened: usize,
+        replied: usize,
+        yes: usize,
+        no: usize,
+        waiting: usize,
+    }
+    let tier_row = |tier: Option<i64>| -> TierRow {
+        let hs: Vec<&Household> = snap.households.iter().filter(|h| tier.is_none_or(|t| h.tier == t)).collect();
+        let mut r = TierRow {
+            label: tier.map(|t| format!("Tier {t}")).unwrap_or_else(|| "All tiers".into()),
+            href: tier.map(|t| format!("/admin/households?tier={t}")).unwrap_or_else(|| "/admin/households".into()),
+            households: hs.len(),
+            people: 0,
+            likely: 0,
+            likely_href: tier.map(|t| format!("/admin/households?tier={t}&filter=likely")).unwrap_or_else(|| "/admin/households?filter=likely".into()),
+            address: hs.iter().filter(|h| !h.address_lines().is_empty()).count(),
+            checked: hs.iter().filter(|h| h.checked_at.is_some()).count(),
+            opened: hs.iter().filter(|h| h.first_viewed_at.is_some()).count(),
+            replied: hs.iter().filter(|h| h.rsvp_at.is_some()).count(),
+            yes: 0,
+            no: 0,
+            waiting: 0,
+        };
+        for h in &hs {
+            for g in snap.guests_of(h.id) {
+                if g.plus_one_of.is_none() {
+                    r.people += 1;
+                    if !h.unlikely {
+                        r.likely += 1;
+                    }
+                }
+                let Some(e) = main_ev else { continue };
+                if !(g.plus_one_of.is_some() || g.invited(h, &e.slug)) {
+                    continue;
+                }
+                match snap.responses.get(&(g.id, e.slug.clone())) {
+                    Some(resp) if resp.attending => r.yes += 1,
+                    Some(_) => r.no += 1,
+                    None if g.plus_one_of.is_none() => r.waiting += 1,
+                    None => {}
+                }
+            }
+        }
+        r
+    };
+    let tier_rows: Vec<TierRow> = vec![tier_row(Some(1)), tier_row(Some(2)), tier_row(Some(3)), tier_row(None)];
+    let progress = |n: usize, of: usize| -> Markup {
+        let pct = if of > 0 { n * 100 / of } else { 0 };
+        html! {
+            div.prog {
+                span.prog-nums { strong { (n) } span.muted { " / " (of) } }
+                span.prog-pct { (pct) "%" }
+                div.prog-bar { span class=(pct_class(pct)) {} }
+            }
+        }
+    };
+
     let body = html! {
+        @if pending_requests > 0 {
+            div.alert.warn { strong { (pending_requests) " household request(s)" } " waiting for approval. " a href="/admin/households" { "Review them" } }
+        }
         @if missing_journal > 0 {
             div.alert.bad { strong { (missing_journal) " RSVP(s) are in the journal but missing from the database." } " Go to " a href="/admin/settings" { "Settings" } " and replay the journal." }
         }
@@ -277,18 +504,60 @@ async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Que
         div.tiles {
             div.tile { span.tile-label { "Phase" } span.tile-value.small { (phase.label()) } span.tile-sub { "RSVP by " (cfg.wedding.rsvp_deadline) } }
             div.tile {
-                span.tile-label { "Households" } span.tile-value { (total) } span.tile-sub { (people) " people" }
+                span.tile-label { "Households" } span.tile-value { (total) }
+                span.tile-sub { (people) " people across all tiers" }
+                @let unlikely_hh: Vec<&Household> = snap.households.iter().filter(|h| h.unlikely).collect();
+                @let unlikely_people = unlikely_hh.iter().map(|h| snap.guests_of(h.id).iter().filter(|g| g.plus_one_of.is_none()).count()).sum::<usize>();
                 span.tile-sub {
-                    @for t in 1..=3 {
-                        @let n: usize = snap.households.iter().filter(|h| h.tier == t).map(|h| snap.guests_of(h.id).len()).sum();
-                        a href={ "/admin/households?tier=" (t) } { "T" (t) " " (n) } " "
-                    }
+                    a href="/admin/households?filter=likely" { strong { (people.saturating_sub(unlikely_people)) } " likely to come" }
+                    " · " (unlikely_people) " marked unlikely"
                 }
             }
             div.tile {
                 span.tile-label { "Replied" } span.tile-value { (replied) small { " / " (total) } }
-                div.meter { span style={ "width:" (pct) "%" } {} }
+                div.meter { span class=(pct_class(pct)) {} }
                 span.tile-sub { (viewed_no_reply) " opened their link but haven't replied" }
+            }
+        }
+        section.card.by-tier {
+            div.card-head {
+                h2 { "By tier" }
+                span.muted.small { "Tier 1 is invited first; tiers 2 and 3 as numbers allow. Click a row to see those households." }
+            }
+            div.table-wrap.flush {
+                table.tier-table {
+                    thead {
+                        tr.group {
+                            th {}
+                            th colspan="3" { "Invited" }
+                            th colspan="4" { "Progress (households)" }
+                            th colspan="3" { (main_ev.map(|e| e.name.as_str()).unwrap_or("Attendance")) " (people)" }
+                        }
+                        tr {
+                            th { "Tier" }
+                            th.num { "Households" } th.num { "People" } th.num title="People in households not marked unlikely to come" { "Likely" }
+                            th { "Address" } th { "Checked correct" } th { "Opened link" } th { "Replied" }
+                            th.num { "Attending" } th.num { "Declined" } th.num { "Waiting" }
+                        }
+                    }
+                    tbody {
+                        @for (i, r) in tier_rows.iter().enumerate() {
+                            tr.total[i == 3] data-href=(r.href) {
+                                td { a.tier-name href=(r.href) { @if i < 3 { span class={ "tier-dot t" (i + 1) } { (i + 1) } } (r.label) } }
+                                td.num.big { (r.households) }
+                                td.num.big { (r.people) }
+                                td.num.big { a href=(r.likely_href) { (r.likely) } }
+                                td { (progress(r.address, r.households)) }
+                                td { (progress(r.checked, r.households)) }
+                                td { (progress(r.opened, r.households)) }
+                                td { (progress(r.replied, r.households)) }
+                                td.num.big.good { (r.yes) }
+                                td.num.big { (r.no) }
+                                td.num.big.muted { (r.waiting) }
+                            }
+                        }
+                    }
+                }
             }
         }
         div.grid2 {
@@ -352,6 +621,7 @@ struct ListQuery {
     status: Option<String>,
     side: Option<String>,
     filter: Option<String>,
+    added: Option<String>,
     m: Option<String>,
 }
 
@@ -401,6 +671,33 @@ fn australia_toggle(csrf: &str, h: &Household, back: &str) -> Markup {
     }
 }
 
+/// S / I dot: grey = not sent, green = sent, gold = opened.
+fn mail_dot(cfg: &Config, letter: &str, what: &str, sent_at: Option<&str>, stat: Option<&store::MailStat>) -> Markup {
+    let opened = stat.and_then(|m| m.first_opened_at.as_deref());
+    let title = match (sent_at, opened) {
+        (None, _) => format!("{what} not sent"),
+        (Some(s), None) => format!("{what} sent {}, not opened yet", when(cfg, s)),
+        (Some(s), Some(o)) => format!("{what} sent {}, opened {}", when(cfg, s), when(cfg, o)),
+    };
+    let class = match (sent_at, opened) {
+        (None, _) => "dot",
+        (Some(_), None) => "dot on",
+        (Some(_), Some(_)) => "dot on opened",
+    };
+    html! { span title=(title) class=(class) { (letter) } }
+}
+
+/// "Unlikely to come" switch.
+fn unlikely_toggle(csrf: &str, h: &Household, back: &str) -> Markup {
+    html! {
+        form.chips-toggle.inline-save method="post" action={ "/admin/households/" (h.id) "/quick" } data-inline {
+            (csrf_input(csrf)) input type="hidden" name="back" value=(back);
+            button.unlikely type="submit" name="toggle_unlikely" value="1" aria-pressed=(if h.unlikely { "true" } else { "false" })
+                title="Click to switch between likely and unlikely to come" { @if h.unlikely { "Unlikely" } @else { "Likely" } }
+        }
+    }
+}
+
 /// One chip per configured event; pressed = invited.
 fn event_toggles(cfg: &Config, csrf: &str, h: &Household, back: &str) -> Markup {
     let replied = h.rsvp_at.is_some();
@@ -419,6 +716,19 @@ fn event_toggles(cfg: &Config, csrf: &str, h: &Household, back: &str) -> Markup 
 
 async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Query<ListQuery>) -> AppResult {
     let snap = Snapshot::load(&st).await?;
+    let requests: Vec<(Household, Vec<Guest>)> = st
+        .db
+        .call(|c| {
+            let mut out = vec![];
+            for h in store::pending_requests(c)? {
+                let g = store::guests_for(c, h.id)?;
+                out.push((h, g));
+            }
+            Ok(out)
+        })
+        .await?;
+    let added_by_values: std::collections::BTreeSet<String> =
+        snap.households.iter().map(|h| h.added_by.clone()).filter(|a| !a.is_empty()).collect();
     let cfg = &st.cfg;
     let needle = q.q.clone().unwrap_or_default().to_lowercase();
     let tier_q: Option<i64> = q.tier.as_deref().and_then(|t| t.parse().ok());
@@ -442,6 +752,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
             };
             let side_ok = q.side.as_deref().is_none_or(|sd| sd.is_empty() || h.side == sd);
             let tier_ok = tier_q.is_none_or(|t| h.tier == t);
+            let added_ok = q.added.as_deref().is_none_or(|a| a.is_empty() || h.added_by == a);
             let filter_ok = match q.filter.as_deref() {
                 Some("no_email") => h.email.is_empty() && gs.iter().all(|g| g.email.is_empty()),
                 Some("no_address") => h.address_lines().is_empty(),
@@ -450,11 +761,16 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                 Some("unchecked") => h.checked_at.is_none(),
                 Some("checked") => h.checked_at.is_some(),
                 Some("not_australia") => !h.australia,
+                Some("unlikely") => h.unlikely,
+                Some("likely") => !h.unlikely,
                 Some("std_unsent") => h.std_sent_at.is_none(),
                 Some("invite_unsent") => h.invite_sent_at.is_none(),
+                Some("std_opened") => snap.mail(h.id, "save_the_date").is_some_and(|m| m.opened > 0),
+                Some("invite_opened_no_reply") => h.rsvp_at.is_none() && snap.mail(h.id, "invitation").is_some_and(|m| m.opened > 0),
+                Some("nudged") => h.nudged_at.is_some() && h.rsvp_at.is_none(),
                 _ => true,
             };
-            text_ok && status_ok && side_ok && tier_ok && filter_ok
+            text_ok && status_ok && side_ok && tier_ok && added_ok && filter_ok
         })
         .collect();
     let people: usize = rows.iter().map(|(_, g, _)| g.len()).sum();
@@ -462,7 +778,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
     // Keep the current filters when an inline form falls back to a full POST + redirect.
     let back = {
         let mut parts = vec![];
-        for (k, v) in [("q", &q.q), ("tier", &q.tier), ("status", &q.status), ("side", &q.side), ("filter", &q.filter)] {
+        for (k, v) in [("q", &q.q), ("tier", &q.tier), ("status", &q.status), ("side", &q.side), ("filter", &q.filter), ("added", &q.added)] {
             if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
                 parts.push(format!("{k}={}", urlencoding::encode(v)));
             }
@@ -503,15 +819,52 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                     option value="checked" selected[sel(&q.filter, "checked")] { "Checked correct" }
                     option value="australia" selected[sel(&q.filter, "australia")] { "Lives in Australia" }
                     option value="not_australia" selected[sel(&q.filter, "not_australia")] { "Lives outside Australia" }
+                    option value="unlikely" selected[sel(&q.filter, "unlikely")] { "Unlikely to come" }
+                    option value="likely" selected[sel(&q.filter, "likely")] { "Not marked unlikely" }
                     option value="no_events" selected[sel(&q.filter, "no_events")] { "Not invited to anything" }
                     option value="no_email" selected[sel(&q.filter, "no_email")] { "Missing email" }
                     option value="no_address" selected[sel(&q.filter, "no_address")] { "Missing address" }
                     option value="std_unsent" selected[sel(&q.filter, "std_unsent")] { "Save the date not sent" }
                     option value="invite_unsent" selected[sel(&q.filter, "invite_unsent")] { "Invitation not sent" }
+                    option value="std_opened" selected[sel(&q.filter, "std_opened")] { "Opened save the date email" }
+                    option value="invite_opened_no_reply" selected[sel(&q.filter, "invite_opened_no_reply")] { "Opened invitation, no reply" }
+                    option value="nudged" selected[sel(&q.filter, "nudged")] { "No reply 2+ days after opening invitation" }
+                }
+                select name="added" aria-label="Added by" {
+                    option value="" { "Added by anyone" }
+                    @for a in &added_by_values { option value=(a) selected[q.added.as_deref() == Some(a.as_str())] { "Added by " (a) } }
                 }
                 noscript { button.button type="submit" { "Filter" } }
             }
-            a.button.primary href="/admin/households/new" { "New household" }
+            a.button.primary href="/admin/households/new" { @if s.user.is_owner() { "New household" } @else { "Request a household" } }
+        }
+        @if !requests.is_empty() {
+            section.card.requests {
+                h2 { "Waiting for approval" span.muted.small { " · " (requests.len()) } }
+                p.muted.small { "Households requested by family and helpers. They don't get a link and aren't counted, sent to or printed until approved." }
+                @for (h, gs) in &requests {
+                    div.request-row {
+                        div {
+                            a.strong href={ "/admin/households/" (h.id) } { (h.name) }
+                            span class={ "side side-" (h.side) } { (side_short(cfg, &h.side)) }
+                            div.small.muted {
+                                (gs.iter().map(|g| g.full_name()).collect::<Vec<_>>().join(" · "))
+                                " · requested by " strong { (h.added_by) } ", " (when(cfg, &h.created_at))
+                            }
+                            @if !h.notes.is_empty() { div.small { (h.notes) } }
+                        }
+                        @if s.user.is_owner() {
+                            form.inline-actions method="post" action={ "/admin/households/" (h.id) "/request" } {
+                                (csrf_input(&s.csrf))
+                                button.button.small.primary type="submit" name="decision" value="approve" { "Approve" }
+                                button.button.small.ghost type="submit" name="decision" value="decline" data-confirm={ "Decline the request for " (h.name) "?" } { "Decline" }
+                            }
+                        } @else {
+                            span.badge.warn { "Waiting for the couple" }
+                        }
+                    }
+                }
+            }
         }
         div.summary-bar {
             span.summary-total { strong { (rows.len()) } " households · " strong { (people) } " people" }
@@ -522,6 +875,9 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
             a.tier-pill.active[sel(&q.filter, "unchecked")] href="/admin/households?filter=unchecked" { "Checked " strong { (checked) } span.muted { " / " (snap.households.len()) } }
             @let au = snap.households.iter().filter(|h| h.australia).count();
             a.tier-pill.active[sel(&q.filter, "australia")] href="/admin/households?filter=australia" { "AU " strong { (au) } span.muted { " hh" } }
+            @let unlikely: Vec<_> = snap.households.iter().filter(|h| h.unlikely).collect();
+            @let unlikely_people = snap.guests.iter().filter(|g| unlikely.iter().any(|h| h.id == g.household_id)).count();
+            a.tier-pill.active[sel(&q.filter, "unlikely")] href="/admin/households?filter=unlikely" { "Unlikely " strong { (unlikely_people) } span.muted { " people · " (unlikely.len()) " hh" } }
         }
         div.table-wrap {
             table.list.households {
@@ -530,6 +886,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                     th.num { "#" }
                     th { "Tier" }
                     th title="Lives in Australia" { "AU" }
+                    th title="Unlikely to come" { "Likely?" }
                     th { "Invited to" }
                     th title="Names and details checked" { "Checked" }
                     th title="Reply status · S = save the date sent, I = invitation sent" { "Reply · sent" }
@@ -542,17 +899,17 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                                     a.hh-name href={ "/admin/households/" (h.id) } { (h.name) }
                                     span class={ "side side-" (h.side) } { (side_short(cfg, &h.side)) }
                                     @for t in h.tag_list() { span.tag { (t) } }
+                                    @if !h.added_by.is_empty() { span.added-by title="Added by" { "added by " (h.added_by) } }
                                 }
-                                @let solo = gs.len() == 1 && gs[0].full_name() == h.name && !gs[0].plus_one_allowed && gs[0].events.is_none();
+                                @let solo = gs.len() == 1 && gs[0].full_name() == h.name;
                                 @if !solo { div.hh-people {
                                     @for (i, g) in gs.iter().enumerate() {
                                         @if i > 0 { span.sep { " · " } }
-                                        span.person.muted[g.plus_one_of.is_some()] {
+                                        span.person.muted[g.plus_one_of.is_some() || g.unnamed_plus_one()] {
                                             (g.full_name())
-                                            @if g.last_name.trim().is_empty() && g.plus_one_of.is_none() { small.warn-text { " no surname" } }
+                                            @if g.last_name.trim().is_empty() && g.plus_one_of.is_none() && !g.unnamed_plus_one() { small.warn-text { " no surname" } }
                                             @if g.is_child { small { " child" } }
-                                            @if g.plus_one_allowed { small { " +1" } }
-                                            @if g.events.is_some() { small title="Invited to fewer events than the household" { " ◐" } }
+                                            @if g.is_plus_one() && !g.unnamed_plus_one() { small { " +1" } }
                                         }
                                     }
                                     @if gs.is_empty() { span.muted { "No people yet" } }
@@ -561,14 +918,16 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                             td.num { (gs.len()) }
                             td { (tier_toggle(&s.csrf, h, &back)) }
                             td { (australia_toggle(&s.csrf, h, &back)) }
+                            td { (unlikely_toggle(&s.csrf, h, &back)) }
                             td.events-cell { (event_toggles(cfg, &s.csrf, h, &back)) }
                             td { (checked_toggle(cfg, &s.csrf, h, &back)) }
                             td.reply {
                                 (status_badge(*status))
                                 div.reply-meta {
-                                    span title="Save the date sent" class=@if h.std_sent_at.is_some() { "dot on" } @else { "dot" } { "S" }
-                                    span title="Invitation sent" class=@if h.invite_sent_at.is_some() { "dot on" } @else { "dot" } { "I" }
-                                    @if let Some(v) = &h.first_viewed_at { span.small.muted { " opened " (when(cfg, v).split(',').next().unwrap_or("")) } }
+                                    (mail_dot(cfg, "S", "Save the date", h.std_sent_at.as_deref(), snap.mail(h.id, "save_the_date")))
+                                    (mail_dot(cfg, "I", "Invitation", h.invite_sent_at.as_deref(), snap.mail(h.id, "invitation")))
+                                    @if let Some(v) = &h.first_viewed_at { span.small.muted title="First visited their page" { " visited " (when(cfg, v).split(',').next().unwrap_or("")) } }
+                                    @if h.nudged_at.is_some() && h.rsvp_at.is_none() { span.badge.warn title="Opened their invitation 2+ days ago and hasn't replied" { "no reply 2d+" } }
                                 }
                             }
                         }
@@ -610,6 +969,9 @@ async fn quick_update(
     if f.get("toggle_australia").is_some() {
         input.australia = Some(!h.australia);
     }
+    if f.get("toggle_unlikely").is_some() {
+        input.unlikely = Some(!h.unlikely);
+    }
     if let Some(ev) = f.get("toggle_event").filter(|e| st.cfg.event(e).is_some()) {
         let mut events = h.events.clone();
         if let Some(pos) = events.iter().position(|e| *e == ev) {
@@ -621,28 +983,28 @@ async fn quick_update(
         events.sort_by_key(|e| st.cfg.events.iter().position(|x| &x.slug == e));
         input.events = Some(events);
     }
-    if input.tier.is_none() && input.events.is_none() && input.australia.is_none() || input.validate(&event_slugs(&st.cfg)).is_err() {
+    if input.tier.is_none() && input.events.is_none() && input.australia.is_none() && input.unlikely.is_none() || input.validate(&event_slugs(&st.cfg)).is_err() {
         return Ok(if inline { (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({"error": "invalid change"}))).into_response() } else { redirect(&format!("{back}#h{id}")) });
     }
     let (code, _) = apply_change(&st, &s, "household.update", Some(id), serde_json::to_value(&input)?).await?;
     if inline {
         let h = st.db.call(move |c| store::must_household(c, id)).await?;
-        return Ok(axum::Json(json!({"tier": h.tier, "events": h.events, "australia": h.australia, "checked": h.checked_at.is_some()})).into_response());
+        return Ok(axum::Json(json!({"tier": h.tier, "events": h.events, "australia": h.australia, "unlikely": h.unlikely, "checked": h.checked_at.is_some()})).into_response());
     }
     let sep = if back.contains('?') { '&' } else { '?' };
     Ok(redirect(&format!("{back}{sep}m={code}#h{id}")))
 }
 
 fn household_fields(cfg: &Config, h: Option<&Household>) -> Markup {
+    household_fields_with(cfg, h, "both")
+}
+
+fn household_fields_with(cfg: &Config, h: Option<&Household>, default_side: &str) -> Markup {
     let v = |f: fn(&Household) -> &str| h.map(f).unwrap_or("").to_string();
     let events: Vec<String> = h.map(|h| h.events.clone()).unwrap_or_else(|| default_events(cfg));
-    let side = h.map(|h| h.side.as_str()).unwrap_or("both");
+    let side = h.map(|h| h.side.as_str()).unwrap_or(default_side);
     html! {
         div.form-grid {
-            label.field { span { "Internal name" } input name="name" value=(v(|h| &h.name)) placeholder="Smith family" maxlength="200"; }
-            label.field { span { "Greeting " small { "(shown to guests: “Dear …”)" } } input name="greeting" value=(v(|h| &h.greeting)) placeholder="Jane & John" maxlength="200"; }
-            label.field.span2 { span { "Envelope name" } input name="envelope" value=(v(|h| &h.envelope)) placeholder="Mr & Mrs J. Smith" maxlength="200"; }
-            label.field { span { "Email" } input type="email" name="email" value=(v(|h| &h.email)) maxlength="200"; }
             label.field.span2 {
                 span {
                     "Address "
@@ -682,6 +1044,11 @@ fn household_fields(cfg: &Config, h: Option<&Household>) -> Markup {
                 input type="checkbox" name="australia" checked[h.is_some_and(|h| h.australia)];
                 "Lives in Australia " span.muted.small { "(sees the Australia travel info on their page, cards and emails)" }
             }
+            label.check.span2 {
+                input type="hidden" name="unlikely_present" value="1";
+                input type="checkbox" name="unlikely" checked[h.is_some_and(|h| h.unlikely)];
+                "Unlikely to come " span.muted.small { "(only for our planning; guests never see this)" }
+            }
             div.field.span2 {
                 span { "Invited to" }
                 div.checks {
@@ -695,59 +1062,62 @@ fn household_fields(cfg: &Config, h: Option<&Household>) -> Markup {
     }
 }
 
-fn guest_fields(cfg: &Config, prefix: &str, g: Option<&Guest>, household_events: &[String]) -> Markup {
+fn guest_fields(prefix: &str, g: Option<&Guest>) -> Markup {
     let n = |k: &str| format!("{prefix}{k}");
     html! {
-        @if household_events.len() > 1 {
-            div.guest-events {
-                input type="hidden" name=(n("ev_present")) value="1";
-                @for e in household_events {
-                    label.check.small {
-                        input type="checkbox" name=(n("ev")) value=(e) checked[g.is_none_or(|g| g.events.as_ref().is_none_or(|own| own.contains(e)))];
-                        (cfg.event(e).map(|x| x.name.as_str()).unwrap_or(e))
-                    }
-                }
-            }
-        }
-        input name=(n("first_name")) value=[g.map(|g| g.first_name.as_str())] placeholder="First" aria-label="First name" maxlength="80";
+        input name=(n("first_name")) value=[g.map(|g| g.first_name.as_str())] placeholder=(if g.is_some_and(|g| g.is_plus_one()) { "First (if known)" } else { "First" }) aria-label="First name" maxlength="80";
         input name=(n("last_name")) value=[g.map(|g| g.last_name.as_str())] placeholder="Last" aria-label="Last name" maxlength="80";
         input type="email" name=(n("email")) value=[g.map(|g| g.email.as_str())] placeholder="Email" aria-label="Email" maxlength="200";
         label.check.small { input type="checkbox" name=(n("is_child")) checked[g.is_some_and(|g| g.is_child)]; "Child" }
-        label.check.small { input type="checkbox" name=(n("plus_one_allowed")) checked[g.is_some_and(|g| g.plus_one_allowed)]; "+1" }
     }
 }
 
 async fn new_household(State(st): State<AppState>, Member(s): Member) -> AppResult {
+    let owner = s.user.is_owner();
+    let default_side = match s.user.access() {
+        "a_parent" => "a",
+        "b_parent" => "b",
+        _ => "both",
+    };
     let body = html! {
         form.card method="post" action="/admin/households/new" {
             (csrf_input(&s.csrf))
+            @if !owner { p.alert { "This sends a request to the couple. They'll add the household to the list once they approve it." } }
             h2 { "People" }
-            p.muted.small { "Leave rows blank to skip them. Tick +1 to let someone bring a guest of their choosing." }
-            @for i in 0..6 { div.guest-row { (guest_fields(&st.cfg, &format!("g{i}."), None, &[])) } }
+            (add_people(Some("A plus one for this household"), 1))
             h2 { "Household" }
-            p.muted.small { "Leave name and greeting blank to build them from the first names above." }
-            (household_fields(&st.cfg, None))
-            div.form-actions { button.button.primary type="submit" { "Create household" } }
+            (household_fields_with(&st.cfg, None, default_side))
+            div.form-actions { button.button.primary type="submit" { @if owner { "Create household" } @else { "Send request" } } }
         }
     };
-    page(&st, &s, "households", "New household", &Flash::default(), body).await
+    page(&st, &s, "households", if owner { "New household" } else { "Request a household" }, &Flash::default(), body).await
 }
 
 async fn create_household(State(st): State<AppState>, Member(s): Member, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
     let mut input = household_input_from(&f, &st.cfg);
-    for i in 0..6 {
-        let g = guest_input_from(&f, &format!("g{i}."), &[]);
-        if g.first_name.as_deref().is_some_and(|n| !n.is_empty()) {
-            input.guests.push(g);
+    for p in new_rows(&f) {
+        let Some((mut gi, slot)) = new_row_input(&f, &p) else { continue };
+        if slot {
+            gi.plus_one_label = Some(String::new()); // named below, once we know who's in the household
         }
+        input.guests.push(gi);
+    }
+    let people: Vec<String> = input.guests.iter().filter(|g| g.plus_one_label.is_none()).filter_map(|g| g.first_name.clone()).collect();
+    let household = input.name.as_deref().or(input.greeting.as_deref()).unwrap_or("").to_string();
+    for (n, g) in input.guests.iter_mut().filter(|g| g.plus_one_label.is_some()).enumerate() {
+        g.plus_one_label = Some(plus_one_name(&people, &household, n + 1));
+    }
+    if input.guests.iter().all(|g| g.plus_one_label.is_some()) {
+        return Ok(ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Check the form", "Add at least one person (not just a plus one)."));
     }
     if let Err(e) = input.validate(&event_slugs(&st.cfg)) {
         return Ok(ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Check the form", &e.to_string()));
     }
     let (code, created) = apply_change(&st, &s, "household.create", None, serde_json::to_value(&input)?).await?;
     Ok(match created {
+        Some(_) if code == "requested" => redirect("/admin/households?m=requested"),
         Some(id) => redirect(&format!("/admin/households/{id}?m={code}")),
         None => redirect(&format!("/admin/households?m={code}")),
     })
@@ -764,10 +1134,11 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
                 store::responses_for(c, id)?,
                 store::submissions(c, Some(id), 20)?,
                 store::audit_log(c, 30, Some(("household", &id.to_string())))?,
+                store::sends_for(c, id)?,
             )))
         })
         .await?;
-    let Some((h, guests, responses, subs, log)) = data else { return Ok(ui::not_found()) };
+    let Some((h, guests, responses, subs, log, sends)) = data else { return Ok(ui::not_found()) };
     let cfg = &st.cfg;
     let owner = s.user.is_owner();
     let token = store::household_token(&st.env.secret, &h);
@@ -779,10 +1150,22 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
     let has_email = !h.email.is_empty() || guests.iter().any(|g| !g.email.is_empty());
 
     let body = html! {
+        @if h.request_status == "pending" {
+            div.alert.warn {
+                strong { "Waiting for approval. " } "Requested by " (h.added_by) ". Until it's approved this household has no working link and isn't counted, sent to or printed."
+                @if owner {
+                    form.inline-actions method="post" action={ "/admin/households/" (h.id) "/request" } {
+                        (csrf_input(&s.csrf))
+                        button.button.small.primary type="submit" name="decision" value="approve" { "Approve" }
+                        button.button.small.ghost type="submit" name="decision" value="decline" data-confirm="Decline this request?" { "Decline" }
+                    }
+                }
+            }
+        }
         @if h.archived_at.is_some() { div.alert.warn { "This household is archived: their link no longer works and they're excluded from lists." } }
         div.head-row {
             div {
-                p.muted.small { (ui::side_label(cfg, &h.side)) " · tier " (h.tier) @if h.australia { " · lives in Australia" } @for t in h.tag_list() { " " span.tag { (t) } } }
+                p.muted.small { (ui::side_label(cfg, &h.side)) " · tier " (h.tier) @if h.australia { " · lives in Australia" } @if h.unlikely { " · " span.badge.warn { "unlikely to come" } } @for t in h.tag_list() { " " span.tag { (t) } } }
                 form.chips-toggle.check-line method="post" action={ "/admin/households/" (h.id) "/quick" } {
                     (csrf_input(&s.csrf)) input type="hidden" name="back" value={ "/admin/households/" (h.id) };
                     button.ok type="submit" name="toggle_checked" value="1" aria-pressed=(if h.checked_at.is_some() { "true" } else { "false" }) {
@@ -791,31 +1174,69 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
                     @if let (Some(by), Some(at)) = (&h.checked_by, &h.checked_at) { span.muted.small { " by " (by) ", " (when(cfg, at)) } }
                 }
                 p.lead { "“Dear " (h.greeting) "”" }
+                @if !h.added_by.is_empty() { p.muted.small { "Added by " strong { (h.added_by) } " · " (when(cfg, &h.created_at)) } }
             }
             (status_badge(status))
         }
         div.grid2.wide-left {
             div {
-                section.card {
+                form.card.household-form method="post" action={ "/admin/households/" (h.id) } {
+                    (csrf_input(&s.csrf))
                     h2 { "People" }
+                    p.muted.small { "Drag " span.drag-glyph { "⠿" } " to reorder. The household's name follows this order (adults first, then children)." }
+                    div.sortable {
                     @for g in &guests {
-                        form.guest-row method="post" action={ "/admin/guests/" (g.id) } {
-                            (csrf_input(&s.csrf))
-                            (guest_fields(cfg, "", Some(g), if g.plus_one_of.is_some() { &[] } else { &h.events }))
-                            input name="dietary" value=(g.dietary) placeholder="Dietary" aria-label="Dietary" maxlength="500";
-                            input name="notes" value=(g.notes) placeholder="Notes" aria-label="Notes" maxlength="2000";
-                            div.row-actions {
-                                button.button.small type="submit" { "Save" }
-                                button.button.small.ghost type="submit" formaction={ "/admin/guests/" (g.id) "/archive" } data-confirm={ "Remove " (g.full_name()) "?" } { "Remove" }
-                            }
+                        @let p = format!("g{}.", g.id);
+                        div.guest-row {
+                            (drag_handle())
+                            input type="hidden" name="guest_ids" value=(g.id);
+                            (guest_fields(&p, Some(g)))
+                            input name={ (p) "dietary" } value=(g.dietary) placeholder="Dietary" aria-label="Dietary" maxlength="500";
+                            input name={ (p) "notes" } value=(g.notes) placeholder="Notes" aria-label="Notes" maxlength="2000";
+                            label.check.small.remove-person { input type="checkbox" name={ (p) "remove" }; "Remove" }
                             @if let Some(host) = g.plus_one_of { p.muted.small.span-all { "Plus-one of " (label(host)) " (added by the guest)" } }
+                            @if g.is_plus_one() {
+                                p.muted.small.span-all {
+                                    span.tag { "+1" } " " (g.plus_one_label)
+                                    @if g.unnamed_plus_one() { ". They'll tell us who on their RSVP." }
+                                }
+                            }
                         }
                     }
-                    form.guest-row.add method="post" action={ "/admin/households/" (h.id) "/guests" } {
-                        (csrf_input(&s.csrf))
-                        (guest_fields(cfg, "", None, &h.events))
-                        div.row-actions { button.button.small.primary type="submit" { "Add person" } }
                     }
+                    @if owner {
+                        (add_people(Some("A plus one"), 0))
+                    } @else {
+                        p.muted.small { "To add someone new, " a href="/admin/households/new" { "request a household" } "." }
+                    }
+                    h2.form-section { "Household" }
+                    (household_fields(cfg, Some(&h)))
+                    div.form-actions.save-bar { button.button.primary type="submit" { "Save" } }
+                }
+                section.card {
+                    h2 { "Emails" }
+                    @if sends.is_empty() { p.muted { "No emails sent yet." } } @else {
+                        table.compact {
+                            thead { tr { th { "Email" } th { "To" } th { "Sent" } th { "Opened" } } }
+                            tbody {
+                                @for m in &sends {
+                                    tr {
+                                        td { (if m.kind == "invitation" { "Invitation" } else { "Save the date" }) @if m.test { " " span.tag { "test" } } }
+                                        td.small { (m.address) }
+                                        td.small { @match &m.sent_at { Some(t) => { (when(cfg, t)) } None => { span.muted { "queued" } } } }
+                                        td.small {
+                                            @match &m.opened_at {
+                                                Some(t) => { span.good { (when(cfg, t)) } @if m.opens > 1 { span.muted { " · " (m.opens) " times" } } }
+                                                None => { span.muted { "not yet" } }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        p.muted.small { "\"Opened\" means the card picture loaded. Some mail apps (iPhone Mail especially) load pictures automatically, and some block them, so treat it as a hint. Visiting their page is the sure sign." }
+                    }
+                    @if h.nudged_at.is_some() && h.rsvp_at.is_none() { p.alert.warn { "Opened their invitation over 2 days ago and hasn't replied (Discord was pinged " (when_opt(cfg, &h.nudged_at)) ")." } }
                 }
                 section.card {
                     h2 { "RSVP" }
@@ -856,14 +1277,6 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
                             summary { (subs.len()) " submission(s) on record" }
                             ul.feed { @for sub in &subs { li { (when(cfg, &sub.received_at)) span.muted.small { " · " (sub.id) } } } }
                         }
-                    }
-                }
-                section.card {
-                    h2 { "Household details" }
-                    form method="post" action={ "/admin/households/" (h.id) } {
-                        (csrf_input(&s.csrf))
-                        (household_fields(cfg, Some(&h)))
-                        div.form-actions { button.button.primary type="submit" { "Save changes" } }
                     }
                 }
             }
@@ -919,52 +1332,81 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
     page(&st, &s, "households", &h.name, &fl, body).await
 }
 
+/// Save the whole household page at once: details, every person, removals and new people.
 async fn update_household(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
+    let bad = |msg: String| Ok(ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Check the form", &msg));
     let input = household_input_from(&f, &st.cfg);
     if let Err(e) = input.validate(&event_slugs(&st.cfg)) {
-        return Ok(ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Check the form", &e.to_string()));
+        return bad(e.to_string());
     }
-    let (code, _) = apply_change(&st, &s, "household.update", Some(id), serde_json::to_value(&input)?).await?;
-    Ok(redirect(&format!("/admin/households/{id}?m={code}")))
-}
+    let (h, current) = st.db.call(move |c| Ok((store::must_household(c, id)?, store::guests_for(c, id)?))).await?;
 
-async fn add_guest(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
-    let f = F::new(pairs);
-    guard!(f.csrf(&s));
-    let hh_events = st.db.call(move |c| Ok(store::must_household(c, id)?.events)).await?;
-    let g = guest_input_from(&f, "", &hh_events);
-    if g.first_name.as_deref().is_none_or(str::is_empty) || g.validate().is_err() {
-        return Ok(redirect(&format!("/admin/households/{id}?m=error")));
+    let mut updates = vec![];
+    let mut removals = vec![];
+    // Rows arrive in the order they were dragged into; that's the new sort order.
+    let mut pos = 0i64;
+    for gid in f.all("guest_ids").iter().filter_map(|g| g.parse::<i64>().ok()) {
+        let Some(g) = current.iter().find(|g| g.id == gid) else { return bad("That person isn't in this household any more; reload the page.".into()) };
+        let p = format!("g{gid}.");
+        if f.check(&format!("{p}remove")) {
+            removals.push(gid);
+            continue;
+        }
+        let gi = guest_input_from(&f, &p);
+        if gi.first_name.as_deref().is_none_or(str::is_empty) && !g.is_plus_one() {
+            return bad(format!("{} needs a first name.", g.full_name()));
+        }
+        if let Err(e) = gi.validate() {
+            return bad(e.to_string());
+        }
+        let mut gi = gi;
+        gi.sort = Some(pos);
+        pos += 1;
+        updates.push((gid, gi));
     }
-    let (code, _) = apply_change(&st, &s, "guest.create", Some(id), serde_json::to_value(&g)?).await?;
-    Ok(redirect(&format!("/admin/households/{id}?m={code}")))
-}
-
-async fn guest_household(st: &AppState, gid: i64) -> anyhow::Result<i64> {
-    Ok(st.db.call(move |c| store::must_guest(c, gid)).await?.household_id)
-}
-
-async fn update_guest(State(st): State<AppState>, Member(s): Member, Path(gid): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
-    let f = F::new(pairs);
-    guard!(f.csrf(&s));
-    let hid = guest_household(&st, gid).await?;
-    let hh_events = st.db.call(move |c| Ok(store::must_household(c, hid)?.events)).await?;
-    let g = guest_input_from(&f, "", &hh_events);
-    if g.first_name.as_deref().is_none_or(str::is_empty) || g.validate().is_err() {
-        return Ok(redirect(&format!("/admin/households/{hid}?m=error")));
+    let mut additions = vec![];
+    let kept: Vec<Guest> = current.iter().filter(|g| !removals.contains(&g.id)).cloned().collect();
+    let mut slots = kept.iter().filter(|g| g.is_plus_one()).count();
+    for p in new_rows(&f) {
+        let Some((mut gi, slot)) = new_row_input(&f, &p) else { continue };
+        if !s.user.is_owner() {
+            return Ok(redirect(&format!("/admin/households/{id}?m=owners-only")));
+        }
+        if slot {
+            slots += 1;
+            gi.plus_one_label = Some(plus_one_label(&h, &kept, slots));
+        }
+        gi.sort = Some(pos);
+        pos += 1;
+        if let Err(e) = gi.validate() {
+            return bad(e.to_string());
+        }
+        additions.push(gi);
     }
-    let (code, _) = apply_change(&st, &s, "guest.update", Some(gid), serde_json::to_value(&g)?).await?;
-    Ok(redirect(&format!("/admin/households/{hid}?m={code}")))
-}
+    if updates.is_empty() && additions.is_empty() && !removals.is_empty() {
+        return bad("A household needs at least one person. Archive the household instead.".into());
+    }
 
-async fn archive_guest(State(st): State<AppState>, Member(s): Member, Path(gid): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
-    let f = F::new(pairs);
-    guard!(f.csrf(&s));
-    let hid = guest_household(&st, gid).await?;
-    let (code, _) = apply_change(&st, &s, "guest.archive", Some(gid), json!({})).await?;
-    Ok(redirect(&format!("/admin/households/{hid}?m={}", if code == "saved" { "archived" } else { code })))
+    let actor = s.user.actor();
+    st.db
+        .call(move |c| {
+            let tx = crate::db::begin(c)?;
+            store::update_household(&tx, &actor, id, &input)?;
+            for (gid, gi) in &updates {
+                store::update_guest(&tx, &actor, *gid, gi)?;
+            }
+            for gid in &removals {
+                store::archive_guest(&tx, &actor, *gid)?;
+            }
+            for gi in &additions {
+                store::create_guest(&tx, &actor, id, gi)?;
+            }
+            tx.commit()
+        })
+        .await?;
+    Ok(redirect(&format!("/admin/households/{id}?m=saved")))
 }
 
 async fn archive_household(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
@@ -994,6 +1436,7 @@ struct PeopleQuery {
     event: Option<String>,
     answer: Option<String>,
     q: Option<String>,
+    kind: Option<String>,
 }
 
 async fn guests(State(st): State<AppState>, Member(s): Member, Query(q): Query<PeopleQuery>) -> AppResult {
@@ -1005,6 +1448,12 @@ async fn guests(State(st): State<AppState>, Member(s): Member, Query(q): Query<P
         .guests
         .iter()
         .filter(|g| needle.is_empty() || g.full_name().to_lowercase().contains(&needle))
+        .filter(|g| match q.kind.as_deref() {
+            Some("children") => g.is_child,
+            Some("adults") => !g.is_child,
+            Some("plus-ones") => g.is_plus_one() || g.plus_one_of.is_some(),
+            _ => true,
+        })
         .filter(|g| {
             let Some(ev) = q.event.as_deref().filter(|e| !e.is_empty()) else { return true };
             let invited = by_h.get(&g.household_id).is_some_and(|h| g.invited(h, ev));
@@ -1021,6 +1470,12 @@ async fn guests(State(st): State<AppState>, Member(s): Member, Query(q): Query<P
         div.toolbar {
             form.filters method="get" {
                 input type="search" name="q" value=[q.q.as_deref()] placeholder="Search people…";
+                select name="kind" {
+                    option value="" { "Everyone" }
+                    @for (k, label) in [("children", "Children"), ("adults", "Adults"), ("plus-ones", "Plus ones")] {
+                        option value=(k) selected[q.kind.as_deref() == Some(k)] { (label) }
+                    }
+                }
                 select name="event" {
                     option value="" { "Any event" }
                     @for e in &cfg.events { option value=(e.slug) selected[q.event.as_deref() == Some(e.slug.as_str())] { (e.name) } }
@@ -1043,7 +1498,7 @@ async fn guests(State(st): State<AppState>, Member(s): Member, Query(q): Query<P
                     @for g in &rows {
                         @let h = by_h.get(&g.household_id);
                         tr {
-                            td { (g.full_name()) @if g.is_child { span.tag { "child" } } @if g.plus_one_of.is_some() { span.tag { "+1" } } }
+                            td { (g.full_name()) @if g.is_child { span.tag { "child" } } @if g.plus_one_of.is_some() || g.is_plus_one() { span.tag { "+1" } } }
                             td.small { a href={ "/admin/households/" (g.household_id) } { (h.map(|h| h.name.as_str()).unwrap_or("")) } }
                             @for e in &cfg.events {
                                 td.small {
@@ -1266,19 +1721,23 @@ async fn send_page(State(st): State<AppState>, Member(s): Member, Query(fl): Que
     let snap = Snapshot::load(&st).await?;
     let outbox = st.db.call(|c| crate::notify::recent(c)).await?;
     let cfg = &st.cfg;
-    let configured = st.env.resend_key.is_some() && cfg.email.from.is_some();
+    let configured = crate::gmail::connected(&st.env).is_some();
 
     // Per kind and tier: households still to send, already sent, and with no email at all.
     struct Counts {
         ready: [usize; 3],
         sent: usize,
+        opened: usize,
         no_email: usize,
     }
-    let counts = |is_sent: fn(&Household) -> bool| {
-        let mut c = Counts { ready: [0; 3], sent: 0, no_email: 0 };
+    let counts = |kind: &str, is_sent: fn(&Household) -> bool| {
+        let mut c = Counts { ready: [0; 3], sent: 0, opened: 0, no_email: 0 };
         for h in snap.households.iter().filter(|h| !h.events.is_empty()) {
             if is_sent(h) {
                 c.sent += 1;
+                if snap.mail(h.id, kind).is_some_and(|m| m.opened > 0) {
+                    c.opened += 1;
+                }
             } else if crate::email::recipients(h, &snap.guests_of(h.id)).is_empty() {
                 c.no_email += 1;
             } else {
@@ -1287,8 +1746,8 @@ async fn send_page(State(st): State<AppState>, Member(s): Member, Query(fl): Que
         }
         c
     };
-    let std_c = counts(|h| h.std_sent_at.is_some());
-    let inv_c = counts(|h| h.invite_sent_at.is_some());
+    let std_c = counts("save_the_date", |h| h.std_sent_at.is_some());
+    let inv_c = counts("invitation", |h| h.invite_sent_at.is_some());
 
     let send_card = |kind: &str, title: &str, blurb: &str, button: &str, c: &Counts| -> Markup {
         html! {
@@ -1300,6 +1759,7 @@ async fn send_page(State(st): State<AppState>, Member(s): Member, Query(fl): Que
                         div.send-stat { span.send-num { (n) } span.send-label { "Tier " (i + 1) " ready" } }
                     }
                     div.send-stat.quiet { span.send-num { (c.sent) } span.send-label { "already sent" } }
+                    div.send-stat.quiet { span.send-num { (c.opened) } span.send-label { "opened" } }
                     div.send-stat.quiet { span.send-num { (c.no_email) } span.send-label {
                         @if c.no_email > 0 { a href="/admin/households?filter=no_email" { "no email" } } @else { "no email" }
                     } }
@@ -1323,7 +1783,7 @@ async fn send_page(State(st): State<AppState>, Member(s): Member, Query(fl): Que
 
     let body = html! {
         @if !configured {
-            div.alert.warn { "Email isn't set up yet. Add " code { "RESEND_API_KEY" } " to the server's env file and " code { "[email] from" } " to wedding.toml, then restart." }
+            div.alert.warn { "Email isn't set up yet. Connect the Gmail account in " a href="/admin/settings#gmail" { "Settings" } " first." }
         }
         div.grid2 {
             (send_card("save_the_date", "Save the dates", "Each household gets an email with their card and their personal link. Households already sent are skipped.", "Send save the dates", &std_c))
@@ -1463,7 +1923,9 @@ async fn users(State(st): State<AppState>, Member(s): Member, Query(q): Query<In
                         (csrf_input(&s.csrf)) input type="hidden" name="user" value=(u.id);
                         span.strong { (u.name) } span.muted.small { " signed up " (when(cfg, &u.created_at)) }
                         span.spacer {}
-                        button.button.small.primary type="submit" name="role" value="helper" { "Approve as helper" }
+                        @for a in ["a_parent", "b_parent", "helper"] {
+                            button.button.small type="submit" name="role" value=(a) { "Approve as " (access_label(cfg, a)) }
+                        }
                         button.button.small type="submit" name="role" value="owner" data-confirm={ "Make " (u.name) " an owner? Owners can do everything." } { "Approve as owner" }
                         button.button.small.ghost type="submit" name="role" value="disabled" { "Reject" }
                     }
@@ -1472,7 +1934,7 @@ async fn users(State(st): State<AppState>, Member(s): Member, Query(q): Query<In
         }
         section.card {
             h2 { "Team" }
-            p.muted.small { strong { "Helpers" } " can view and edit the guest list. " strong { "Owners" } " can also send emails, manage the team and change settings." }
+            p.muted.small { strong { "Owners" } " do everything. " strong { (access_label(cfg, "a_parent")) "s, " (access_label(cfg, "b_parent")) "s and helpers" } " can see and update the list, but anyone they want to add is sent to you as a request." }
             @for u in list.iter().filter(|u| u.role != "pending") {
                 form.user-row method="post" action="/admin/users" {
                     (csrf_input(&s.csrf)) input type="hidden" name="user" value=(u.id);
@@ -1480,7 +1942,7 @@ async fn users(State(st): State<AppState>, Member(s): Member, Query(q): Query<In
                     span.muted.small { " last seen " (when_opt(cfg, &u.last_login_at)) }
                     span.spacer {}
                     select name="role" aria-label="Role" {
-                        @for r in ["owner", "helper", "disabled"] { option value=(r) selected[u.role == r] { (r) } }
+                        @for a in ["owner", "a_parent", "b_parent", "helper", "disabled"] { option value=(a) selected[u.access() == a] { (if a == "disabled" { "Disabled".to_string() } else { access_label(cfg, a) }) } }
                     }
                     button.button.small type="submit" { "Update" }
                 }
@@ -1491,7 +1953,9 @@ async fn users(State(st): State<AppState>, Member(s): Member, Query(q): Query<In
             p.muted.small { "Invite links skip the approval step. Alternatively, people can sign up at " code { (cfg.site.base_url) "/admin/register" } " and you approve them here." }
             form.inline-actions method="post" action="/admin/users/invite" {
                 (csrf_input(&s.csrf))
-                select name="role" aria-label="Role" { option value="helper" { "Helper" } option value="owner" { "Owner" } }
+                select name="role" aria-label="Access" {
+                    @for a in ["a_parent", "b_parent", "helper", "owner"] { option value=(a) { (access_label(cfg, a)) } }
+                }
                 select name="hours" aria-label="Expires" { option value="24" { "24 hours" } option value="48" selected { "48 hours" } option value="168" { "7 days" } }
                 button.button.primary type="submit" { "Create invite link" }
             }
@@ -1512,7 +1976,7 @@ async fn user_role(State(st): State<AppState>, Member(s): Member, Form(pairs): F
     guard!(f.csrf(&s));
     guard!(s.require_owner());
     let (uid, role, actor) = (f.s("user"), f.s("role"), s.user.actor());
-    let res = st.db.call(move |c| store::set_user_role(c, &actor, &uid, &role)).await;
+    let res = st.db.call(move |c| store::set_user_access(c, &actor, &uid, &role)).await;
     Ok(match res {
         Ok(()) => redirect("/admin/users?m=role"),
         Err(e) => ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Couldn't change role", &e.to_string()),
@@ -1534,6 +1998,69 @@ async fn create_invite(State(st): State<AppState>, Member(s): Member, Form(pairs
 // ---------------------------------------------------------------------------
 // Settings (owners)
 
+const GMAIL_STATE_COOKIE: &str = "__Host-rsvp_gmail_state";
+
+/// Start connecting the Gmail account: off to Google's consent screen.
+async fn gmail_connect(State(st): State<AppState>, Member(s): Member) -> AppResult {
+    guard!(s.require_owner());
+    let state = crate::tokens::random_secret(16);
+    let url = match crate::gmail::auth_url(&st.cfg, &st.env, &state, st.cfg.email.account.as_deref()) {
+        Ok(u) => u,
+        Err(e) => return Ok(ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Gmail isn't set up on the server", &e.to_string())),
+    };
+    let mut r = redirect(&url);
+    let c = format!("{GMAIL_STATE_COOKIE}={state}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600");
+    if let Ok(v) = axum::http::HeaderValue::from_str(&c) {
+        r.headers_mut().append(axum::http::header::SET_COOKIE, v);
+    }
+    Ok(r)
+}
+
+#[derive(Deserialize)]
+struct GmailCallback {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+async fn gmail_callback(State(st): State<AppState>, Member(s): Member, headers: axum::http::HeaderMap, Query(q): Query<GmailCallback>) -> AppResult {
+    guard!(s.require_owner());
+    let fail = |msg: String| Ok(ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Couldn't connect Gmail", &msg));
+    if let Some(e) = q.error {
+        return fail(format!("Google said: {e}. Nothing was connected."));
+    }
+    let expected = super::auth::cookie(&headers, GMAIL_STATE_COOKIE).unwrap_or("");
+    if expected.is_empty() || !crate::tokens::constant_time_eq(expected, q.state.as_deref().unwrap_or("")) {
+        return fail("That sign-in link expired or didn't start here. Go back to Settings and click Connect Gmail again.".into());
+    }
+    let Some(code) = q.code else { return fail("Google didn't send a sign-in code.".into()) };
+    let stored = match crate::gmail::connect(&st.http, &st.cfg, &st.env, &code).await {
+        Ok(s) => s,
+        Err(e) => return fail(e.to_string()),
+    };
+    if let Some(want) = st.cfg.email.account.as_deref().filter(|w| !w.eq_ignore_ascii_case(&stored.email)) {
+        crate::gmail::disconnect(&st.env)?;
+        return fail(format!("You signed in as {}, but emails must come from {want}. Try again and pick that account.", stored.email));
+    }
+    let (actor, email) = (s.user.actor(), stored.email.clone());
+    st.db.call(move |c| store::audit(c, &actor, "gmail.connect", "", "", &json!({"account": email}))).await?;
+    let mut r = redirect("/admin/settings?m=gmail-connected#gmail");
+    if let Ok(v) = axum::http::HeaderValue::from_str(&format!("{GMAIL_STATE_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0")) {
+        r.headers_mut().append(axum::http::header::SET_COOKIE, v);
+    }
+    Ok(r)
+}
+
+async fn gmail_disconnect(State(st): State<AppState>, Member(s): Member, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+    let f = F::new(pairs);
+    guard!(f.csrf(&s));
+    guard!(s.require_owner());
+    crate::gmail::disconnect(&st.env)?;
+    let actor = s.user.actor();
+    st.db.call(move |c| store::audit(c, &actor, "gmail.disconnect", "", "", &json!({}))).await?;
+    Ok(redirect("/admin/settings?m=gmail-disconnected#gmail"))
+}
+
 async fn settings(State(st): State<AppState>, Member(s): Member, Query(fl): Query<Flash>) -> AppResult {
     guard!(s.require_owner());
     let journal = st.journal.clone();
@@ -1551,7 +2078,31 @@ async fn settings(State(st): State<AppState>, Member(s): Member, Query(fl): Quer
         })
         .await?;
     let cfg = &st.cfg;
+    let gmail = crate::gmail::connected(&st.env);
+    let gmail_ready = st.env.gmail_client_id.is_some() && st.env.gmail_client_secret.is_some();
     let body = html! {
+        section.card #gmail {
+            h2 { "Email (Gmail)" }
+            @match &gmail {
+                Some(g) => {
+                    p { "Emails are sent from " strong { (g.email) } ", connected " (when(cfg, &g.connected_at)) "." }
+                    p.muted.small { "The site can only send email from this account. It can't read the inbox. Replies go to the inbox as normal." }
+                    form.inline-actions method="post" action="/admin/gmail/disconnect" {
+                        (csrf_input(&s.csrf))
+                        button.button type="submit" data-confirm="Disconnect Gmail? Nothing can be emailed until it's connected again." { "Disconnect" }
+                    }
+                }
+                None => {
+                    p { "Not connected, so nothing can be emailed yet." }
+                    p.muted.small {
+                        "Connecting asks Google for permission to send email only. The site never sees the password and can't read the inbox."
+                        @if let Some(a) = &cfg.email.account { " Sign in as " strong { (a) } "." }
+                    }
+                    @if gmail_ready { a.button.primary href="/admin/gmail/connect" { "Connect Gmail" } }
+                    @else { p.alert.warn { "The server needs " code { "GMAIL_CLIENT_ID" } " and " code { "GMAIL_CLIENT_SECRET" } " in its env file first." } }
+                }
+            }
+        }
         section.card {
             h2 { "Phase" }
             p.muted.small { "Controls what guests see at their link." }
@@ -1725,4 +2276,273 @@ async fn audit(State(st): State<AppState>, Member(s): Member, Query(q): Query<Au
         }
     };
     page(&st, &s, "audit", "Activity", &Flash::default(), body).await
+}
+
+// ---------------------------------------------------------------------------
+// Website pages
+
+async fn website(State(st): State<AppState>, Member(s): Member, Query(fl): Query<Flash>) -> AppResult {
+    let pages = st.db.call(|c| crate::site::pages(c)).await?;
+    let cfg = &st.cfg;
+    let audience = |a: &str| crate::site::AUDIENCES.iter().find(|(k, _)| *k == a).map(|(_, l)| *l).unwrap_or(a).to_string();
+    let body = html! {
+        p.muted { "These pages appear in the menu on your guests' site once they've opened their invitation link. Only households with a valid link can see them." }
+        div.table-wrap {
+            table.list {
+                thead { tr { th { "Page" } th { "Address" } th { "Shown to" } th { "Status" } th { "Last edited" } } }
+                tbody {
+                    @for p in &pages {
+                        tr data-href={ "/admin/website/" (p.slug) } {
+                            td { a.strong href={ "/admin/website/" (p.slug) } { (p.title) } @if p.builtin() { span.tag { "built in" } } }
+                            td.small.muted { "/" (p.slug) }
+                            td.small { (audience(&p.audience)) }
+                            td { @if p.published { span.badge.good { "Published" } } @else { span.badge.muted { "Hidden" } } }
+                            td.small.muted { (when(cfg, &p.updated_at)) @if !p.updated_by.is_empty() && p.updated_by != "system" { " · " (p.updated_by.trim_start_matches("user:")) } }
+                        }
+                    }
+                }
+            }
+        }
+        section.card {
+            h2 { "Add a page" }
+            form.inline-actions method="post" action="/admin/website" {
+                (csrf_input(&s.csrf))
+                input name="title" placeholder="e.g. Things to do" required maxlength="100" aria-label="Page title";
+                button.button.primary type="submit" { "Create page" }
+            }
+        }
+    };
+    page(&st, &s, "website", "Website", &fl, body).await
+}
+
+async fn create_page(State(st): State<AppState>, Member(s): Member, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+    let f = F::new(pairs);
+    guard!(f.csrf(&s));
+    let title = f.s("title");
+    let mut slug = crate::site::slugify(&title);
+    if !crate::site::valid_slug(&slug) {
+        slug = format!("page-{slug}");
+    }
+    let actor = s.user.actor();
+    let res = st
+        .db
+        .call(move |c| {
+            let mut candidate = slug.clone();
+            let mut n = 2;
+            while crate::site::get_page(c, &candidate)?.is_some() {
+                candidate = format!("{slug}-{n}");
+                n += 1;
+            }
+            let sort: i64 = c.query_row("SELECT COALESCE(MAX(sort), 0) + 10 FROM pages WHERE slug <> 'gallery'", [], |r| r.get(0))?;
+            let input = crate::site::PageInput { title, body: String::new(), audience: "all".into(), published: false, sort };
+            crate::site::save_page(c, &actor, &candidate, &input)?;
+            Ok(candidate)
+        })
+        .await;
+    Ok(match res {
+        Ok(slug) => redirect(&format!("/admin/website/{slug}")),
+        Err(e) => ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Couldn't create that page", &e.to_string()),
+    })
+}
+
+async fn edit_page(State(st): State<AppState>, Member(s): Member, Path(slug): Path<String>, Query(fl): Query<Flash>) -> AppResult {
+    let p = { let slug = slug.clone(); st.db.call(move |c| crate::site::get_page(c, &slug)).await? };
+    let Some(p) = p else { return Ok(ui::not_found()) };
+    let body = html! {
+        form.card.page-editor method="post" action={ "/admin/website/" (p.slug) } {
+            (csrf_input(&s.csrf))
+            div.form-grid {
+                label.field { span { "Title (shown in the menu)" } input name="title" value=(p.title) required maxlength="100"; }
+                label.field { span { "Address" } input value={ (st.cfg.site.base_url) "/" (p.slug) } readonly; }
+                label.field {
+                    span { "Shown to" }
+                    select name="audience" { @for (k, l) in crate::site::AUDIENCES { option value=(k) selected[p.audience == *k] { (l) } } }
+                }
+                label.field { span { "Menu order " small { "(lower comes first)" } } input type="number" name="sort" value=(p.sort) step="1"; }
+                label.check.span2 { input type="checkbox" name="published" checked[p.published]; "Published: show this page on the site" }
+                @if p.slug == "schedule" { p.span2.muted.small { "Each household's official events (with dates, times and venues) are listed automatically under your text. Use the text for everything else: welcome drinks, the day after, timings, notes." } }
+                @if p.slug == "gallery" { p.span2.muted.small { "This text appears above the photos. Add and caption photos on the " a href="/admin/gallery" { "Gallery" } " page." } }
+                label.field.span2 {
+                    span { "Page text" }
+                    textarea.page-body name="body" rows="18" maxlength="50000" { (p.body) }
+                }
+                details.span2.format-help {
+                    summary { "Formatting help" }
+                    pre { "## A heading\n\nA paragraph. **Bold**, *italic*, [a link](https://example.com).\n\n- a bullet\n- another bullet\n\n1. a numbered step\n2. another step" }
+                    p.muted.small { "Text only for households in Australia (or only for everyone else) goes between two marker lines:" }
+                    pre { "::: australia\n## Coming from Australia\nOnly households in Australia see this.\n:::\n\n::: us\nOnly households outside Australia see this.\n:::" }
+                }
+            }
+            div.form-actions {
+                button.button.primary type="submit" { "Save page" }
+                @if p.published { a.button.ghost href={ "/" (p.slug) } target="_blank" rel="noopener" { "View on site ↗" } }
+            }
+        }
+        @if !p.builtin() {
+            form method="post" action={ "/admin/website/" (p.slug) "/delete" } {
+                (csrf_input(&s.csrf))
+                button.button.ghost.small type="submit" data-confirm="Delete this page?" { "Delete page" }
+            }
+        }
+    };
+    page(&st, &s, "website", &p.title, &fl, body).await
+}
+
+async fn save_page(State(st): State<AppState>, Member(s): Member, Path(slug): Path<String>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+    let f = F::new(pairs);
+    guard!(f.csrf(&s));
+    let input = crate::site::PageInput {
+        title: f.s("title"),
+        body: f.0.get("body").cloned().unwrap_or_default().replace("\r\n", "\n"),
+        audience: f.s("audience"),
+        published: f.check("published"),
+        sort: f.s("sort").parse().unwrap_or(0),
+    };
+    let (actor, slug2) = (s.user.actor(), slug.clone());
+    let res = st
+        .db
+        .call(move |c| {
+            if crate::site::get_page(c, &slug2)?.is_none() {
+                anyhow::bail!("page not found");
+            }
+            crate::site::save_page(c, &actor, &slug2, &input)
+        })
+        .await;
+    Ok(match res {
+        Ok(()) => redirect(&format!("/admin/website/{slug}?m=page-saved")),
+        Err(e) => ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Couldn't save that page", &e.to_string()),
+    })
+}
+
+async fn delete_page(State(st): State<AppState>, Member(s): Member, Path(slug): Path<String>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+    let f = F::new(pairs);
+    guard!(f.csrf(&s));
+    let actor = s.user.actor();
+    let res = st.db.call(move |c| crate::site::delete_page(c, &actor, &slug)).await;
+    Ok(match res {
+        Ok(()) => redirect("/admin/website?m=page-deleted"),
+        Err(e) => ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Couldn't delete that page", &e.to_string()),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Gallery
+
+async fn gallery(State(st): State<AppState>, Member(s): Member, Query(fl): Query<Flash>) -> AppResult {
+    let (photos, gpage) = st.db.call(|c| Ok((crate::site::photos(c)?, crate::site::get_page(c, "gallery")?))).await?;
+    let published = gpage.as_ref().is_some_and(|p| p.published);
+    let body = html! {
+        @if !published {
+            div.alert.warn { "The gallery page is hidden from guests. " a href="/admin/website/gallery" { "Publish it and write its description" } " when you're ready." }
+        } @else {
+            p.muted { "Guests see these photos, in this order, on the " a href="/admin/website/gallery" { "Gallery page" } " (where you can also edit the description above the photos)." }
+        }
+        section.card {
+            h2 { "Add photos" }
+            form.upload-form method="post" action="/admin/gallery/upload" enctype="multipart/form-data" {
+                (csrf_input(&s.csrf))
+                input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple required;
+                button.button.primary type="submit" { "Upload" }
+            }
+            p.muted.small { "JPEG, PNG or WebP, up to 25 MB each. Photos are resized for the web and their location and camera details are removed. On an iPhone, choosing photos here sends them as JPEG automatically." }
+        }
+        @if photos.is_empty() { p.muted { "No photos yet." } }
+        div.admin-gallery {
+            @for (i, p) in photos.iter().enumerate() {
+                form.photo-card method="post" action={ "/admin/gallery/" (p.id) } {
+                    (csrf_input(&s.csrf))
+                    a href={ "/media/" (p.large()) } target="_blank" rel="noopener" { img src={ "/media/" (p.thumb()) } alt="" loading="lazy"; }
+                    textarea name="caption" rows="2" maxlength="1000" placeholder="Caption (optional)" aria-label="Caption" { (p.caption) }
+                    div.photo-actions {
+                        button.button.small type="submit" name="action" value="caption" { "Save caption" }
+                        button.button.small.ghost type="submit" name="action" value="up" disabled[i == 0] title="Move earlier" { "←" }
+                        button.button.small.ghost type="submit" name="action" value="down" disabled[i + 1 == photos.len()] title="Move later" { "→" }
+                        button.button.small.ghost type="submit" name="action" value="delete" data-confirm="Remove this photo from the gallery?" { "Remove" }
+                    }
+                }
+            }
+        }
+    };
+    page(&st, &s, "gallery", "Gallery", &fl, body).await
+}
+
+async fn gallery_upload(State(st): State<AppState>, Member(s): Member, mut mp: axum::extract::Multipart) -> AppResult {
+    let mut csrf_ok = false;
+    let (mut added, mut failed) = (0usize, Vec::new());
+    while let Some(field) = mp.next_field().await.map_err(|e| anyhow::anyhow!("upload interrupted: {e}"))? {
+        match field.name() {
+            Some("_csrf") => {
+                let v = field.text().await.unwrap_or_default();
+                csrf_ok = s.check_csrf(Some(&v)).is_ok();
+            }
+            Some("photos") => {
+                if !csrf_ok {
+                    return Ok(ui::error_page(axum::http::StatusCode::FORBIDDEN, "Session expired", "Please reload the page and try again."));
+                }
+                let name = field.file_name().unwrap_or("photo").to_string();
+                let bytes = match field.bytes().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        failed.push(format!("{name}: {e}"));
+                        continue;
+                    }
+                };
+                if bytes.is_empty() {
+                    continue;
+                }
+                if bytes.len() > 25 * 1024 * 1024 {
+                    failed.push(format!("{name}: larger than 25 MB"));
+                    continue;
+                }
+                let dir = st.env.data_dir.clone();
+                match tokio::task::spawn_blocking(move || crate::site::process_photo(&dir, &bytes)).await? {
+                    Ok((stem, w, h)) => {
+                        let actor = s.user.actor();
+                        st.db.call(move |c| crate::site::add_photo(c, &actor, &stem, w, h, "")).await?;
+                        added += 1;
+                    }
+                    Err(e) => failed.push(format!("{name}: {e}")),
+                }
+            }
+            _ => {}
+        }
+    }
+    if !failed.is_empty() {
+        return Ok(ui::error_page(
+            axum::http::StatusCode::BAD_REQUEST,
+            &format!("{added} photo(s) added, {} couldn't be", failed.len()),
+            &failed.join(" · "),
+        ));
+    }
+    Ok(redirect("/admin/gallery?m=uploaded"))
+}
+
+async fn gallery_photo(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+    let f = F::new(pairs);
+    guard!(f.csrf(&s));
+    let (action, caption, actor) = (f.s("action"), f.0.get("caption").cloned().unwrap_or_default(), s.user.actor());
+    st.db
+        .call(move |c| match action.as_str() {
+            "caption" => crate::site::set_caption(c, &actor, id, &caption),
+            "up" => crate::site::move_photo(c, &actor, id, -1),
+            "down" => crate::site::move_photo(c, &actor, id, 1),
+            "delete" => crate::site::delete_photo(c, &actor, id),
+            _ => Ok(()),
+        })
+        .await?;
+    Ok(redirect("/admin/gallery?m=saved"))
+}
+
+async fn review_request(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+    let f = F::new(pairs);
+    guard!(f.csrf(&s));
+    guard!(s.require_owner());
+    let approve = f.s("decision") == "approve";
+    let actor = s.user.actor();
+    let res = st.db.call(move |c| store::review_request(c, &actor, id, approve)).await;
+    Ok(match res {
+        Ok(()) if approve => redirect(&format!("/admin/households/{id}?m=approved")),
+        Ok(()) => redirect("/admin/households?m=declined"),
+        Err(e) => ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Couldn't do that", &e.to_string()),
+    })
 }

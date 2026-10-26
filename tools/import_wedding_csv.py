@@ -6,10 +6,11 @@
 
 Mapping:
   - rows are grouped by the Household column (or the guest's own name if blank)
-  - "X's +1" / "X +1" placeholder rows become `plus_one_allowed` on their host
+  - "X's +1" / "X +1" placeholder rows become a plus-one slot ("X's plus one") when X has
+    nobody else in their household; otherwise they're dropped
   - Wedding=Yes-R1 -> wedding; Rehearsal Dinner=Yes -> rehearsal-dinner
-  - a person invited to fewer events than their household gets a per-person override
-  - Category -> side (Bride's -> a, Groom's -> b, Parent Requests -> a) and a tag;
+  - events are per household: the union of everyone's events
+  - Category -> side (Bride's -> a, Groom's -> b, Parent Requests -> a, added_by Julie) and a tag;
   - australia: anyone in the household is down for the Melbourne event
   - tier: 1 if anyone in the household is Wedding=Yes-R1, 2 if anyone is TBD, otherwise 3
   - the couple's own rows (Bride, Groom) and the totals row are skipped
@@ -50,7 +51,7 @@ def side_and_tag(category: str):
     if c.startswith("groom"):
         return "b", "family" if "family" in c else "friends"
     if "parent" in c:
-        return "a", "parent-requests"
+        return "a", ""
     return "both", ""
 
 
@@ -93,11 +94,6 @@ def main(path):
         for i, m in enumerate(real):
             first, last = split_name(m["Guest Name"])
             g = {"first_name": first, "last_name": last, "sort": i}
-            if id(m) in hosts:
-                g["plus_one_allowed"] = True
-            own = person_events(m)
-            if own != household_events:
-                g["events"] = own  # a subset; [] = on the list but not invited to these events
             notes = [m["Notes"].strip()] if m["Notes"].strip() else []
             if m["Email"].strip():
                 g["email"] = m["Email"].strip()
@@ -107,13 +103,17 @@ def main(path):
                 g["notes"] = " · ".join(notes)
             guests.append(g)
 
-        firsts = [g["first_name"] for g in guests]
+        if hosts and len(real) == 1:
+            guests.append({"plus_one_label": f"{guests[0]['first_name']}'s plus one", "sort": 1000})
+
+        firsts = [g["first_name"] for g in guests if g.get("first_name")]
         greeting = firsts[0] if len(firsts) == 1 else ", ".join(firsts[:-1]) + " & " + firsts[-1]
         h = {
-            "name": key,
             "greeting": greeting,
             "side": side,
             "tier": tier,
+            # Every "Parent Requests" row came from Julie, Alyssa's mum.
+            "added_by": "Julie (Alyssa's parent)" if "parent" in real[0]["Category"].lower() else "Guest list",
             "australia": any(m["Melbourne Event"].strip() == "Yes" for m in real),
             "tags": ", ".join(tags),
             "events": household_events,

@@ -34,6 +34,10 @@ pub struct Household {
     pub tier: i64,
     /// Lives in Australia: sees the Australia travel information.
     pub australia: bool,
+    /// We think they probably won't come.
+    pub unlikely: bool,
+    /// When Discord was told they opened their invitation 48+ hours ago without replying.
+    pub nudged_at: Option<String>,
     pub tags: String,
     pub events: Vec<String>,
     pub notes: String,
@@ -53,6 +57,10 @@ pub struct Household {
     /// Someone confirmed the names and details are all correct.
     pub checked_at: Option<String>,
     pub checked_by: Option<String>,
+    /// Who put this household on the list, e.g. "Brend" or "Julie (Alyssa's parent)".
+    pub added_by: String,
+    /// "" for normal households; "pending" while a helper's request awaits approval.
+    pub request_status: String,
     pub created_at: String,
     pub updated_at: String,
     pub archived_at: Option<String>,
@@ -76,6 +84,8 @@ impl Household {
             side: r.get("side")?,
             tier: r.get("tier")?,
             australia: r.get("australia")?,
+            unlikely: r.get("unlikely")?,
+            nudged_at: r.get("nudged_at")?,
             tags: r.get("tags")?,
             events: serde_json::from_str(&events).unwrap_or_default(),
             notes: r.get("notes")?,
@@ -93,6 +103,8 @@ impl Household {
             address_at: r.get("address_at")?,
             checked_at: r.get("checked_at")?,
             checked_by: r.get("checked_by")?,
+            added_by: r.get("added_by")?,
+            request_status: r.get("request_status")?,
             created_at: r.get("created_at")?,
             updated_at: r.get("updated_at")?,
             archived_at: r.get("archived_at")?,
@@ -148,20 +160,23 @@ pub struct HouseholdInput {
     pub side: Option<String>,
     pub tier: Option<i64>,
     pub australia: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlikely: Option<bool>,
     pub tags: Option<String>,
     pub events: Option<Vec<String>>,
     pub notes: Option<String>,
     /// Only honoured on create.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guests: Vec<GuestInput>,
+    /// Only honoured on create: who added it (defaults to the actor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<String>,
 }
 
 impl HouseholdInput {
     fn fields(&self) -> Vec<(&'static str, Option<String>)> {
         vec![
-            ("name", self.name.clone()),
-            ("greeting", self.greeting.clone()),
-            ("envelope", self.envelope.clone()),
+            // `name`/`greeting` are ignored: the household's name is always built from its people.
             ("email", self.email.clone()),
             ("addr1", self.addr1.clone()),
             ("addr2", self.addr2.clone()),
@@ -172,6 +187,7 @@ impl HouseholdInput {
             ("side", self.side.clone()),
             ("tier", self.tier.map(|t| t.to_string())),
             ("australia", self.australia.map(|a| (a as i64).to_string())),
+            ("unlikely", self.unlikely.map(|a| (a as i64).to_string())),
             ("tags", self.tags.clone()),
             ("events", self.events.as_ref().map(|e| serde_json::to_string(e).unwrap())),
             ("notes", self.notes.clone()),
@@ -222,10 +238,11 @@ pub fn plausible_email(s: &str) -> bool {
 }
 
 pub fn list_households(conn: &Connection, include_archived: bool) -> Result<Vec<Household>> {
+    // The everyday list excludes archived households and requests still awaiting approval.
     let sql = if include_archived {
         "SELECT * FROM households ORDER BY name COLLATE NOCASE"
     } else {
-        "SELECT * FROM households WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE"
+        "SELECT * FROM households WHERE archived_at IS NULL AND request_status = '' ORDER BY name COLLATE NOCASE"
     };
     let mut st = conn.prepare(sql)?;
     let rows = st.query_map([], Household::from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -245,7 +262,7 @@ pub fn must_household(conn: &Connection, id: i64) -> Result<Household> {
 pub fn household_by_token(conn: &Connection, token: &str) -> Result<Option<Household>> {
     Ok(conn
         .query_row(
-            "SELECT * FROM households WHERE token_hash = ?1 AND archived_at IS NULL",
+            "SELECT * FROM households WHERE token_hash = ?1 AND archived_at IS NULL AND request_status = ''",
             [tokens::hash_token(token)],
             Household::from_row,
         )
@@ -259,26 +276,28 @@ pub fn create_household(
     input: &HouseholdInput,
     default_events: &[String],
 ) -> Result<i64> {
-    let name = input.name.clone().filter(|s| !s.trim().is_empty());
-    let greeting = input.greeting.clone().filter(|s| !s.trim().is_empty());
-    let (name, greeting) = match (name, greeting) {
-        (Some(n), Some(g)) => (n, g),
-        (Some(n), None) => (n.clone(), n),
-        (None, Some(g)) => (g.clone(), g),
-        (None, None) => {
-            let derived = derive_greeting(&input.guests);
-            if derived.is_empty() {
-                bail!("a household needs a name, a greeting, or at least one guest");
-            }
-            (derived.clone(), derived)
-        }
-    };
+    create_household_as(conn, actor, actor, false, secret, input, default_events)
+}
+
+/// Create a household recording who added it. `pending` = a request awaiting approval.
+pub fn create_household_as(
+    conn: &Connection,
+    actor: &str,
+    added_by: &str,
+    pending: bool,
+    secret: &[u8],
+    input: &HouseholdInput,
+    default_events: &[String],
+) -> Result<i64> {
+    if !input.guests.iter().any(|g| g.first_name.as_deref().is_some_and(|n| !n.trim().is_empty()) && g.plus_one_label.as_deref().is_none_or(str::is_empty)) {
+        bail!("a household needs at least one named person");
+    }
     let ts = now();
     let events = input.events.clone().unwrap_or_else(|| default_events.to_vec());
     let tx = crate::db::begin(conn)?;
     tx.execute(
-        "INSERT INTO households (name, greeting, events, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-        params![name.trim(), greeting.trim(), serde_json::to_string(&events)?, ts],
+        "INSERT INTO households (name, greeting, events, created_at, updated_at) VALUES ('', '', ?1, ?2, ?2)",
+        params![serde_json::to_string(&events)?, ts],
     )?;
     let id = tx.last_insert_rowid();
     let mut rest = input.clone();
@@ -288,23 +307,64 @@ pub fn create_household(
     apply_household_fields(&tx, id, &rest)?;
     let token = tokens::household_token(secret, id, 1);
     tx.execute("UPDATE households SET token_hash = ?1 WHERE id = ?2", params![tokens::hash_token(&token), id])?;
+    let added = input.added_by.clone().filter(|a| !a.trim().is_empty()).unwrap_or_else(|| added_by.to_string());
+    tx.execute(
+        "UPDATE households SET added_by = ?1, request_status = ?2 WHERE id = ?3",
+        params![added.trim(), if pending { "pending" } else { "" }, id],
+    )?;
     for (i, g) in input.guests.iter().enumerate() {
         let mut g = g.clone();
         g.sort.get_or_insert(i as i64);
         insert_guest(&tx, id, &g)?;
     }
-    audit(&tx, actor, "household.create", "household", &id.to_string(), &serde_json::to_value(input)?)?;
+    let name = household_name(&guests_for(&tx, id)?);
+    tx.execute("UPDATE households SET name = ?1, greeting = ?1 WHERE id = ?2", params![name, id])?;
+    audit(&tx, actor, if pending { "household.request" } else { "household.create" }, "household", &id.to_string(), &serde_json::to_value(input)?)?;
     tx.commit()?;
     Ok(id)
 }
 
-fn derive_greeting(guests: &[GuestInput]) -> String {
-    let names: Vec<&str> = guests.iter().filter_map(|g| g.first_name.as_deref()).collect();
+/// A household's name ("Dear ..."): its people's first names, adults then children, in their
+/// listed order, like "Ben, Sarah & Tom". Plus ones count once we know their name.
+pub fn household_name(guests: &[Guest]) -> String {
+    let named = |child: bool| {
+        guests
+            .iter()
+            .filter(move |g| g.archived_at.is_none() && g.is_child == child && !g.unnamed_plus_one())
+            .map(|g| g.first_name.trim())
+            .filter(|n| !n.is_empty())
+    };
+    let names: Vec<&str> = named(false).chain(named(true)).collect();
     match names.as_slice() {
         [] => String::new(),
         [one] => one.to_string(),
         [init @ .., last] => format!("{} & {}", init.join(", "), last),
     }
+}
+
+/// Re-derive a household's name after its people change. Leaves it alone if nobody is named.
+pub fn refresh_name(conn: &Connection, actor: &str, household_id: i64) -> Result<()> {
+    let name = household_name(&guests_for(conn, household_id)?);
+    let old: String = conn.query_row("SELECT name FROM households WHERE id = ?1", [household_id], |r| r.get(0))?;
+    if name.is_empty() || name == old {
+        return Ok(());
+    }
+    conn.execute("UPDATE households SET name = ?1, greeting = ?1, envelope = '' WHERE id = ?2", params![name, household_id])?;
+    audit(conn, actor, "household.rename", "household", &household_id.to_string(), &json!({"from": old, "to": name}))?;
+    Ok(())
+}
+
+/// Bring every household's name in line with its people (run at startup).
+pub fn refresh_all_names(conn: &Connection) -> Result<usize> {
+    let ids: Vec<i64> = conn.prepare("SELECT id FROM households")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let before: i64 = conn.query_row("SELECT COUNT(*) FROM audit WHERE action = 'household.rename'", [], |r| r.get(0))?;
+    let tx = crate::db::begin(conn)?;
+    for id in ids {
+        refresh_name(&tx, "system", id)?;
+    }
+    tx.commit()?;
+    let after: i64 = conn.query_row("SELECT COUNT(*) FROM audit WHERE action = 'household.rename'", [], |r| r.get(0))?;
+    Ok((after - before) as usize)
 }
 
 fn apply_household_fields(conn: &Connection, id: i64, input: &HouseholdInput) -> Result<BTreeMap<String, String>> {
@@ -342,6 +402,29 @@ pub fn set_household_archived(conn: &Connection, actor: &str, id: i64, archived:
     let val = archived.then(now);
     tx.execute("UPDATE households SET archived_at = ?1, updated_at = ?2 WHERE id = ?3", params![val, now(), id])?;
     audit(&tx, actor, if archived { "household.archive" } else { "household.restore" }, "household", &id.to_string(), &json!({}))?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Households requested by helpers, waiting for an owner.
+pub fn pending_requests(conn: &Connection) -> Result<Vec<Household>> {
+    let mut st = conn.prepare("SELECT * FROM households WHERE request_status = 'pending' AND archived_at IS NULL ORDER BY created_at")?;
+    Ok(st.query_map([], Household::from_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Approve (add to the list) or decline (archive) a requested household.
+pub fn review_request(conn: &Connection, actor: &str, id: i64, approve: bool) -> Result<()> {
+    let h = must_household(conn, id)?;
+    if h.request_status != "pending" {
+        bail!("{} isn't waiting for approval", h.name);
+    }
+    let tx = crate::db::begin(conn)?;
+    if approve {
+        tx.execute("UPDATE households SET request_status = '', updated_at = ?1 WHERE id = ?2", params![now(), id])?;
+    } else {
+        tx.execute("UPDATE households SET request_status = 'declined', archived_at = ?1, updated_at = ?1 WHERE id = ?2", params![now(), id])?;
+    }
+    audit(&tx, actor, if approve { "household.request_approved" } else { "household.request_declined" }, "household", &id.to_string(), &json!({"added_by": h.added_by}))?;
     tx.commit()?;
     Ok(())
 }
@@ -415,6 +498,122 @@ pub fn mark_sent(conn: &Connection, id: i64, which: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Email sends and opens
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EmailSend {
+    pub id: String,
+    pub household_id: i64,
+    pub address: String,
+    pub kind: String,
+    pub test: bool,
+    pub queued_at: String,
+    pub sent_at: Option<String>,
+    pub opened_at: Option<String>,
+    pub last_opened_at: Option<String>,
+    pub opens: i64,
+}
+
+impl EmailSend {
+    fn from_row(r: &Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: r.get("id")?,
+            household_id: r.get("household_id")?,
+            address: r.get("address")?,
+            kind: r.get("kind")?,
+            test: r.get("test")?,
+            queued_at: r.get("queued_at")?,
+            sent_at: r.get("sent_at")?,
+            opened_at: r.get("opened_at")?,
+            last_opened_at: r.get("last_opened_at")?,
+            opens: r.get("opens")?,
+        })
+    }
+}
+
+pub fn create_send(conn: &Connection, household_id: i64, address: &str, kind: &str, test: bool) -> Result<String> {
+    let id = tokens::random_secret(16);
+    conn.execute(
+        "INSERT INTO email_sends (id, household_id, address, kind, test, queued_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, household_id, address, kind, test, now()],
+    )?;
+    Ok(id)
+}
+
+pub fn get_send(conn: &Connection, id: &str) -> Result<Option<EmailSend>> {
+    Ok(conn.query_row("SELECT * FROM email_sends WHERE id = ?1", [id], EmailSend::from_row).optional()?)
+}
+
+pub fn mark_send_sent(conn: &Connection, id: &str, provider_id: &str) -> Result<()> {
+    conn.execute("UPDATE email_sends SET sent_at = ?1, provider_id = ?2 WHERE id = ?3", params![now(), provider_id, id])?;
+    Ok(())
+}
+
+/// The card picture was loaded. Returns the send if it exists.
+pub fn record_open(conn: &Connection, id: &str) -> Result<Option<EmailSend>> {
+    let ts = now();
+    let n = conn.execute(
+        "UPDATE email_sends SET opens = opens + 1, last_opened_at = ?1, opened_at = COALESCE(opened_at, ?1)
+         WHERE id = ?2 AND sent_at IS NOT NULL",
+        params![ts, id],
+    )?;
+    if n == 0 {
+        return Ok(None);
+    }
+    get_send(conn, id)
+}
+
+pub fn sends_for(conn: &Connection, household_id: i64) -> Result<Vec<EmailSend>> {
+    let mut st = conn.prepare("SELECT * FROM email_sends WHERE household_id = ?1 ORDER BY queued_at DESC")?;
+    let rows = st.query_map([household_id], EmailSend::from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Per household and kind (real sends only): how many were opened, and the first open.
+#[derive(Debug, Clone, Default)]
+pub struct MailStat {
+    pub opened: i64,
+    pub first_opened_at: Option<String>,
+}
+
+pub fn mail_stats(conn: &Connection) -> Result<HashMap<(i64, String), MailStat>> {
+    let mut st = conn.prepare(
+        "SELECT household_id, kind, COUNT(opened_at), MIN(opened_at) FROM email_sends
+         WHERE test = 0 AND sent_at IS NOT NULL GROUP BY household_id, kind",
+    )?;
+    let rows = st
+        .query_map([], |r| Ok(((r.get(0)?, r.get(1)?), MailStat { opened: r.get(2)?, first_opened_at: r.get(3)? })))?
+        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+    Ok(rows)
+}
+
+/// Households that opened their invitation before `cutoff`, still haven't replied, and haven't
+/// been flagged yet: flag them and queue a Discord message, in one transaction each.
+pub fn flag_unanswered_invitations(conn: &Connection, cutoff: &str, base_url: &str) -> Result<usize> {
+    let due: Vec<(i64, String, String)> = conn
+        .prepare(
+            "SELECT h.id, h.name, MIN(s.opened_at) FROM households h JOIN email_sends s ON s.household_id = h.id
+             WHERE s.kind = 'invitation' AND s.test = 0 AND s.opened_at IS NOT NULL
+               AND h.rsvp_at IS NULL AND h.nudged_at IS NULL AND h.archived_at IS NULL
+             GROUP BY h.id HAVING MIN(s.opened_at) <= ?1",
+        )?
+        .query_map([cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (hid, name, opened) in &due {
+        let tx = crate::db::begin(conn)?;
+        tx.execute("UPDATE households SET nudged_at = ?1 WHERE id = ?2", params![now(), hid])?;
+        audit(&tx, "system", "household.invite_unanswered", "household", &hid.to_string(), &json!({"opened_at": opened}))?;
+        enqueue(
+            &tx,
+            "discord",
+            &json!({"type": "nudge", "text": format!("👀 **{name}** opened their invitation over 2 days ago and hasn't replied yet.\n{base_url}/admin/households/{hid}")}),
+        )?;
+        tx.commit()?;
+    }
+    Ok(due.len())
+}
+
+// ---------------------------------------------------------------------------
 // Guests
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,13 +624,14 @@ pub struct Guest {
     pub last_name: String,
     pub email: String,
     pub is_child: bool,
-    pub plus_one_allowed: bool,
+    /// Legacy: plus-ones created by the old RSVP flow.
     pub plus_one_of: Option<i64>,
+    /// Non-empty marks a plus-one slot ("Ben's plus one"). Their name stays empty until the
+    /// household tells us who is coming; the slot stays a plus-one after that.
+    pub plus_one_label: String,
     pub dietary: String,
     pub notes: String,
     pub sort: i64,
-    /// Subset of the household's events this person is invited to; None = all of them.
-    pub events: Option<Vec<String>>,
     pub archived_at: Option<String>,
 }
 
@@ -444,23 +644,32 @@ impl Guest {
             last_name: r.get("last_name")?,
             email: r.get("email")?,
             is_child: r.get("is_child")?,
-            plus_one_allowed: r.get("plus_one_allowed")?,
             plus_one_of: r.get("plus_one_of")?,
+            plus_one_label: r.get("plus_one_label")?,
             dietary: r.get("dietary")?,
             notes: r.get("notes")?,
             sort: r.get("sort")?,
-            events: r.get::<_, Option<String>>("events")?.and_then(|s| serde_json::from_str(&s).ok()),
             archived_at: r.get("archived_at")?,
         })
     }
 
-    /// Is this person invited to `event`? Needs the household's invitation too.
+    /// Is this person invited to `event`? Events are invited per household.
     pub fn invited(&self, h: &Household, event: &str) -> bool {
-        h.events.iter().any(|e| e == event) && self.events.as_ref().is_none_or(|own| own.iter().any(|e| e == event))
+        h.events.iter().any(|e| e == event)
     }
 
     pub fn full_name(&self) -> String {
-        format!("{} {}", self.first_name, self.last_name).trim().to_string()
+        let n = format!("{} {}", self.first_name, self.last_name).trim().to_string();
+        if n.is_empty() { self.plus_one_label.clone() } else { n }
+    }
+
+    pub fn is_plus_one(&self) -> bool {
+        !self.plus_one_label.is_empty()
+    }
+
+    /// A plus-one slot whose person we don't know yet.
+    pub fn unnamed_plus_one(&self) -> bool {
+        self.is_plus_one() && self.first_name.trim().is_empty()
     }
 }
 
@@ -471,18 +680,11 @@ pub struct GuestInput {
     pub last_name: Option<String>,
     pub email: Option<String>,
     pub is_child: Option<bool>,
-    pub plus_one_allowed: Option<bool>,
+    /// Makes this person a plus-one slot, e.g. "Ben's plus one" (first name may then be empty).
+    pub plus_one_label: Option<String>,
     pub dietary: Option<String>,
     pub notes: Option<String>,
     pub sort: Option<i64>,
-    /// Restrict to these household events (`[]` = none of them). JSON `null` clears the
-    /// restriction (invited to whatever the household is); omitted = unchanged.
-    #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
-    pub events: Option<Option<Vec<String>>>,
-}
-
-fn double_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
-    Option::<T>::deserialize(d).map(Some)
 }
 
 impl GuestInput {
@@ -492,7 +694,7 @@ impl GuestInput {
                 bail!("'{e}' does not look like an email address");
             }
         }
-        for v in [&self.first_name, &self.last_name, &self.dietary, &self.notes].into_iter().flatten() {
+        for v in [&self.first_name, &self.last_name, &self.plus_one_label, &self.dietary, &self.notes].into_iter().flatten() {
             if v.len() > 2000 {
                 bail!("field too long");
             }
@@ -509,17 +711,10 @@ impl GuestInput {
             ("last_name", s(&self.last_name)),
             ("email", s(&self.email)),
             ("is_child", b(&self.is_child)),
-            ("plus_one_allowed", b(&self.plus_one_allowed)),
+            ("plus_one_label", s(&self.plus_one_label)),
             ("dietary", s(&self.dietary)),
             ("notes", s(&self.notes)),
             ("sort", self.sort.map(V::Integer)),
-            (
-                "events",
-                self.events.as_ref().map(|e| match e {
-                    None => V::Null,
-                    Some(list) => V::Text(serde_json::to_string(list).unwrap()),
-                }),
-            ),
         ]
     }
 }
@@ -552,7 +747,12 @@ pub fn must_guest(conn: &Connection, id: i64) -> Result<Guest> {
 
 fn insert_guest(conn: &Connection, household_id: i64, g: &GuestInput) -> Result<i64> {
     let first = g.first_name.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let Some(first) = first else { bail!("guest first_name is required") };
+    let slot = g.plus_one_label.as_deref().is_some_and(|l| !l.trim().is_empty());
+    let first = match first {
+        Some(f) => f,
+        None if slot => "",
+        None => bail!("guest first_name is required"),
+    };
     let ts = now();
     conn.execute(
         "INSERT INTO guests (household_id, first_name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
@@ -570,7 +770,10 @@ fn apply_guest_fields(conn: &Connection, id: i64, g: &GuestInput) -> Result<BTre
     for (col, val) in g.fields() {
         if let Some(v) = val {
             if col == "first_name" && matches!(&v, rusqlite::types::Value::Text(t) if t.is_empty()) {
-                bail!("first_name cannot be empty");
+                let label: String = conn.query_row("SELECT plus_one_label FROM guests WHERE id = ?1", [id], |r| r.get(0))?;
+                if label.is_empty() && g.plus_one_label.as_deref().is_none_or(str::is_empty) {
+                    bail!("first_name cannot be empty");
+                }
             }
             let jv = match &v {
                 rusqlite::types::Value::Text(t) if col == "events" => serde_json::from_str(t).unwrap_or(json!(t)),
@@ -599,37 +802,42 @@ pub fn create_guest(conn: &Connection, actor: &str, household_id: i64, g: &Guest
     }
     let id = insert_guest(&tx, household_id, &g2)?;
     audit(&tx, actor, "guest.create", "guest", &id.to_string(), &json!({"household_id": household_id, "fields": g}))?;
+    refresh_name(&tx, actor, household_id)?;
     tx.commit()?;
     Ok(id)
 }
 
 pub fn update_guest(conn: &Connection, actor: &str, id: i64, g: &GuestInput) -> Result<()> {
-    must_guest(conn, id)?;
+    let hid = must_guest(conn, id)?.household_id;
     g.validate()?;
     let tx = crate::db::begin(conn)?;
     let changed = apply_guest_fields(&tx, id, g)?;
     if !changed.is_empty() {
         audit(&tx, actor, "guest.update", "guest", &id.to_string(), &json!(changed))?;
+        refresh_name(&tx, actor, hid)?;
     }
     tx.commit()?;
     Ok(())
 }
 
 pub fn move_guest(conn: &Connection, actor: &str, id: i64, household_id: i64) -> Result<()> {
-    must_guest(conn, id)?;
+    let from = must_guest(conn, id)?.household_id;
     must_household(conn, household_id)?;
     let tx = crate::db::begin(conn)?;
     tx.execute("UPDATE guests SET household_id = ?1, updated_at = ?2 WHERE id = ?3", params![household_id, now(), id])?;
     audit(&tx, actor, "guest.move", "guest", &id.to_string(), &json!({"household_id": household_id}))?;
+    refresh_name(&tx, actor, from)?;
+    refresh_name(&tx, actor, household_id)?;
     tx.commit()?;
     Ok(())
 }
 
 pub fn archive_guest(conn: &Connection, actor: &str, id: i64) -> Result<()> {
-    must_guest(conn, id)?;
+    let hid = must_guest(conn, id)?.household_id;
     let tx = crate::db::begin(conn)?;
     tx.execute("UPDATE guests SET archived_at = ?1, updated_at = ?1 WHERE id = ?2", params![now(), id])?;
     audit(&tx, actor, "guest.archive", "guest", &id.to_string(), &json!({}))?;
+    refresh_name(&tx, actor, hid)?;
     tx.commit()?;
     Ok(())
 }
@@ -867,6 +1075,8 @@ pub struct User {
     pub created_at: String,
     pub approved_by: Option<String>,
     pub last_login_at: Option<String>,
+    /// "" (helper/owner), "a_parent" or "b_parent": one of the couple's parents.
+    pub relation: String,
 }
 
 impl User {
@@ -878,11 +1088,17 @@ impl User {
             created_at: r.get("created_at")?,
             approved_by: r.get("approved_by")?,
             last_login_at: r.get("last_login_at")?,
+            relation: r.get("relation")?,
         })
     }
     pub fn is_owner(&self) -> bool {
         self.role == "owner"
     }
+    /// Team access as one value: owner, a_parent, b_parent, helper, pending or disabled.
+    pub fn access(&self) -> &str {
+        if self.role == "helper" && !self.relation.is_empty() { &self.relation } else { &self.role }
+    }
+
     pub fn is_active(&self) -> bool {
         matches!(self.role.as_str(), "owner" | "helper")
     }
@@ -930,32 +1146,68 @@ pub fn set_user_role(conn: &Connection, actor: &str, user_id: &str, role: &str) 
     Ok(())
 }
 
-pub fn create_invite(conn: &Connection, actor: &str, role: &str, hours: i64) -> Result<String> {
+/// Team access to (role, relation). Parents are helpers who belong to one side.
+pub fn access_parts(access: &str) -> Result<(&'static str, &'static str)> {
+    Ok(match access {
+        "owner" => ("owner", ""),
+        "helper" => ("helper", ""),
+        "a_parent" => ("helper", "a_parent"),
+        "b_parent" => ("helper", "b_parent"),
+        "pending" => ("pending", ""),
+        "disabled" => ("disabled", ""),
+        _ => bail!("access must be owner, helper, a_parent, b_parent, pending or disabled"),
+    })
+}
+
+pub fn set_user_access(conn: &Connection, actor: &str, user_id: &str, access: &str) -> Result<()> {
+    let (role, relation) = access_parts(access)?;
+    set_user_role(conn, actor, user_id, role)?;
+    conn.execute("UPDATE users SET relation = ?1 WHERE id = ?2", params![relation, user_id])?;
+    Ok(())
+}
+
+pub fn create_invite(conn: &Connection, actor: &str, access: &str, hours: i64) -> Result<String> {
+    let (role, relation) = access_parts(access)?;
     if !matches!(role, "helper" | "owner") {
-        bail!("invite role must be helper or owner");
+        bail!("invites are for owners, helpers or parents");
     }
     let code = tokens::random_secret(20);
     let exp = time::OffsetDateTime::now_utc() + time::Duration::hours(hours);
     let tx = crate::db::begin(conn)?;
     tx.execute(
-        "INSERT INTO invites (code_hash, role, created_by, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![tokens::sha256_hex(&code), role, actor, now(), exp.format(&time::format_description::well_known::Rfc3339)?],
+        "INSERT INTO invites (code_hash, role, relation, created_by, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![tokens::sha256_hex(&code), role, relation, actor, now(), exp.format(&time::format_description::well_known::Rfc3339)?],
     )?;
-    audit(&tx, actor, "invite.create", "invite", "", &json!({"role": role, "hours": hours}))?;
+    audit(&tx, actor, "invite.create", "invite", "", &json!({"access": access, "hours": hours}))?;
     tx.commit()?;
     Ok(code)
 }
 
-/// Returns the invite's role if the code is valid and unused.
-pub fn check_invite(conn: &Connection, code: &str) -> Result<Option<String>> {
-    let row: Option<(String, String, Option<String>)> = conn
+/// Returns the invite's (role, relation) if the code is valid and unused.
+pub fn check_invite(conn: &Connection, code: &str) -> Result<Option<(String, String)>> {
+    let row: Option<(String, String, String, Option<String>)> = conn
         .query_row(
-            "SELECT role, expires_at, used_at FROM invites WHERE code_hash = ?1",
+            "SELECT role, relation, expires_at, used_at FROM invites WHERE code_hash = ?1",
             [tokens::sha256_hex(code.trim())],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    Ok(row.and_then(|(role, exp, used)| (used.is_none() && exp > now()).then_some(role)))
+    Ok(row.and_then(|(role, relation, exp, used)| (used.is_none() && exp > now()).then_some((role, relation))))
+}
+
+/// Permanently remove a disabled or pending account (audit history keeps their name).
+pub fn delete_user(conn: &Connection, actor: &str, name: &str) -> Result<()> {
+    let u = user_by_name(conn, name)?.ok_or_else(|| anyhow!("no user named {name}"))?;
+    if u.is_active() {
+        bail!("{} is {}; disable them first", u.name, u.role);
+    }
+    let tx = crate::db::begin(conn)?;
+    tx.execute("DELETE FROM sessions WHERE user_id = ?1", [&u.id])?;
+    tx.execute("DELETE FROM credentials WHERE user_id = ?1", [&u.id])?;
+    tx.execute("DELETE FROM users WHERE id = ?1", [&u.id])?;
+    audit(&tx, actor, "user.delete", "user", &u.id, &json!({"name": u.name}))?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn consume_invite(conn: &Connection, code: &str, user_id: &str) -> Result<()> {
@@ -979,13 +1231,44 @@ pub mod tests {
     }
 
     #[test]
+    fn email_opens_and_unanswered_invitations() {
+        let db = mem();
+        db.with(|c| {
+            let input = HouseholdInput { guests: vec![GuestInput { first_name: Some("Ada".into()), ..Default::default() }], ..Default::default() };
+            let hid = create_household(c, "t", &[1; 32], &input, &[])?;
+            let test = create_send(c, hid, "me@example.com", "invitation", true)?;
+            let real = create_send(c, hid, "ada@example.com", "invitation", false)?;
+            assert!(record_open(c, &real)?.is_none(), "not sent yet, so not an open");
+            mark_send_sent(c, &real, "g1")?;
+            mark_send_sent(c, &test, "g2")?;
+            record_open(c, &test)?;
+            assert!(mail_stats(c)?.get(&(hid, "invitation".to_string())).is_none_or(|m| m.opened == 0), "tests don't count");
+            let s = record_open(c, &real)?.unwrap();
+            assert_eq!(s.opens, 1);
+            let first = s.opened_at.clone().unwrap();
+            assert_eq!(record_open(c, &real)?.unwrap().opened_at.unwrap(), first, "first open is kept");
+            assert_eq!(mail_stats(c)?[&(hid, "invitation".to_string())].opened, 1);
+
+            // Opened just now: not due. Pretend it was opened 3 days ago: flagged once, Discord queued.
+            assert_eq!(flag_unanswered_invitations(c, "2000-01-01T00:00:00Z", "https://x")?, 0);
+            c.execute("UPDATE email_sends SET opened_at = '2020-01-01T00:00:00Z' WHERE id = ?1", [&real])?;
+            assert_eq!(flag_unanswered_invitations(c, &now(), "https://x")?, 1);
+            assert_eq!(flag_unanswered_invitations(c, &now(), "https://x")?, 0, "only once");
+            let n: i64 = c.query_row("SELECT COUNT(*) FROM outbox WHERE kind = 'discord' AND payload LIKE '%hasn''t replied%'", [], |r| r.get(0))?;
+            assert_eq!(n, 1);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn household_lifecycle() {
         let db = mem();
         db.with(|c| {
             let input = HouseholdInput {
                 guests: vec![
                     GuestInput { first_name: Some("Jane".into()), last_name: Some("Smith".into()), ..Default::default() },
-                    GuestInput { first_name: Some("John".into()), plus_one_allowed: Some(false), ..Default::default() },
+                    GuestInput { first_name: Some("John".into()), ..Default::default() },
                 ],
                 ..Default::default()
             };
@@ -1000,6 +1283,18 @@ pub mod tests {
             assert!(household_by_token(c, &new)?.is_some());
             assert_eq!(guests_for(c, id)?.len(), 2);
             assert!(c.execute("DELETE FROM audit", []).is_err(), "audit must be append-only");
+
+            // A helper's household is a request: no working link and not listed until approved.
+            let req = HouseholdInput { guests: vec![GuestInput { first_name: Some("Rex".into()), ..Default::default() }], ..Default::default() };
+            let rid = create_household_as(c, "user:julie", "Julie (A's parent)", true, &[1; 32], &req, &["ceremony".into()])?;
+            let rh = must_household(c, rid)?;
+            assert_eq!((rh.added_by.as_str(), rh.request_status.as_str()), ("Julie (A's parent)", "pending"));
+            assert!(household_by_token(c, &household_token(&[1; 32], &rh))?.is_none());
+            assert!(!list_households(c, false)?.iter().any(|h| h.id == rid));
+            assert_eq!(pending_requests(c)?.len(), 1);
+            review_request(c, "user:brend", rid, true)?;
+            assert!(household_by_token(c, &household_token(&[1; 32], &rh))?.is_some());
+            assert!(list_households(c, false)?.iter().any(|h| h.id == rid));
             Ok(())
         })
         .unwrap();

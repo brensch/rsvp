@@ -38,45 +38,20 @@
 
 #let thin-rule(width: 20mm, color: rule-c) = box(width: width, line(length: 100%, stroke: 0.45pt + color))
 
-// Laurel wreath, open at the top. Leaves are ellipses placed along a circle,
-// tangent to it and tilted alternately in and out; they shrink towards the tips.
-#let wreath(diam: 30mm, color: accent, leaves: 8, sweep: 128deg) = box(width: diam, height: diam, {
-  let k = diam / 30mm // leaf geometry scales with the wreath
-  let r = diam / 2 - 1.8mm * k
-  let c = diam / 2
-  for side in (-1, 1) {
-    // stem
-    let pts = range(0, 25).map(i => {
-      let a = 90deg + side * (14deg + i / 24 * (sweep + 6deg))
-      (c + r * calc.cos(a), c + r * calc.sin(a))
-    })
-    place(curve(stroke: (0.4pt * k) + color, curve.move(pts.at(0)), ..pts.slice(1).map(p => curve.line(p))))
-    for i in range(leaves) {
-      let t = i / (leaves - 1)
-      let a = 90deg + side * (20deg + t * sweep)
-      let s = 1 - t * 0.5
-      let lw = 1.25mm * s * k
-      let lh = 3.9mm * s * k
-      for (j, tilt) in ((0, 28deg), (1, -28deg)) {
-        let off = if j == 0 { 1.15mm * s * k } else { -1.15mm * s * k }
-        let x = c + (r + off) * calc.cos(a)
-        let y = c + (r + off) * calc.sin(a)
-        place(dx: x - lw / 2, dy: y - lh / 2, rotate(a + side * tilt, ellipse(width: lw, height: lh, fill: color)))
-      }
-    }
-  }
-  // berry at the base
-  place(dx: c - 0.7mm * k, dy: c + r - 0.7mm * k, circle(radius: 0.7mm * k, fill: color))
-})
+// The emblem: golden wattle (Australia) and olive (USA) rising from a ribbon bow into an open
+// wreath. Drawn by tools/draw_emblem.py into /art/emblem.svg.
+#let art-ratio = 520 / 600 // height / width
 
-// Initials inside a wreath: "A & S".
-#let monogram(size: 30mm) = box(width: size, height: size, {
+#let emblem(width: 60mm) = image("/art/emblem.svg", width: width)
+
+// The emblem with the couple's initials ("A & B") in the middle. `size` is its width.
+#let monogram(size: 60mm) = box(width: size, height: size * art-ratio, {
+  place(emblem(width: size))
   let m = data.couple.monogram.clusters()
-  place(center + horizon, wreath(diam: size))
-  place(center + horizon, dy: -0.3mm, {
-    set text(font: display, style: "italic", fill: ink, size: size * 0.27, weight: 400)
+  place(center + top, dy: size * art-ratio * 0.31, {
+    set text(font: display, style: "italic", fill: ink, size: size * 0.22, weight: 400)
     if m.len() == 2 {
-      [#m.at(0)#h(0.04em)#text(size: size * 0.17, fill: accent)[&]#h(0.04em)#m.at(1)]
+      [#m.at(0)#h(0.04em)#text(size: size * 0.135, fill: accent)[&]#h(0.04em)#m.at(1)]
     } else {
       data.couple.monogram
     }

@@ -1,0 +1,16 @@
+{
+  "prerender": [
+    {
+      "source": "document",
+      "where": {
+        "and": [
+          { "href_matches": "/*" },
+          { "not": { "href_matches": "/admin/*" } },
+          { "not": { "href_matches": "/media/*" } },
+          { "not": { "href_matches": "/i/*/*" } }
+        ]
+      },
+      "eagerness": "moderate"
+    }
+  ]
+}

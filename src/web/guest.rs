@@ -27,11 +27,18 @@ pub fn routes() -> Router<AppState> {
         .route("/i/{token}/{file}", get(download))
 }
 
-pub async fn home(State(st): State<AppState>) -> Markup {
+pub async fn home(State(st): State<AppState>, headers: HeaderMap) -> axum::response::Response {
+    // A returning guest goes straight back to their invitation.
+    if let Some(token) = guest_cookie(&headers) {
+        let t = token.clone();
+        if st.db.call(move |c| store::household_by_token(c, &t)).await.ok().flatten().is_some() {
+            return redirect(&format!("/i/{token}"));
+        }
+    }
     guest_page(
         &st.cfg,
         &st.cfg.title(),
-        &st.monogram_svg,
+        None,
         html! {
             section.hero {
                 p.kicker { "By invitation" }
@@ -40,6 +47,7 @@ pub async fn home(State(st): State<AppState>) -> Markup {
             }
         },
     )
+    .into_response()
 }
 
 struct Ctx {
@@ -47,6 +55,35 @@ struct Ctx {
     guests: Vec<Guest>,
     responses: Vec<Resp>,
     phase: Phase,
+    pages: Vec<(String, String)>,
+}
+
+/// Remembers which household this browser belongs to, so the rest of the site
+/// (schedule, travel, gallery) works without the invitation link in the URL.
+pub const GUEST_COOKIE: &str = "__Host-rsvp_guest";
+
+pub fn guest_cookie(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .find_map(|kv| kv.trim().strip_prefix(GUEST_COOKIE).and_then(|r| r.strip_prefix('=')).map(String::from))
+        .filter(|t| crate::tokens::plausible_token(t))
+}
+
+fn remember(mut resp: axum::response::Response, token: &str) -> axum::response::Response {
+    // Lax so that arriving from an emailed link still sends it; one year.
+    let v = format!("{GUEST_COOKIE}={token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=31536000");
+    if let Ok(v) = axum::http::HeaderValue::from_str(&v) {
+        resp.headers_mut().append(header::SET_COOKIE, v);
+    }
+    resp
+}
+
+/// Published pages this household can see, for the site navigation.
+pub fn nav_pages(c: &rusqlite::Connection, h: &Household) -> anyhow::Result<Vec<(String, String)>> {
+    Ok(crate::site::pages(c)?.into_iter().filter(|p| p.published && p.shown_to(h.australia)).map(|p| (p.slug, p.title)).collect())
 }
 
 async fn load(st: &AppState, token: &str) -> AppResult<Option<Ctx>> {
@@ -62,7 +99,8 @@ async fn load(st: &AppState, token: &str) -> AppResult<Option<Ctx>> {
             let guests = store::guests_for(c, h.id)?;
             let responses = store::responses_for(c, h.id)?;
             let phase = store::phase(c)?;
-            Ok(Some(Ctx { h, guests, responses, phase }))
+            let pages = nav_pages(c, &h)?;
+            Ok(Some(Ctx { h, guests, responses, phase, pages }))
         })
         .await?)
 }
@@ -77,7 +115,7 @@ async fn page(State(st): State<AppState>, Path(token): Path<String>, Query(q): Q
     let Some(ctx) = load(&st, &token).await? else { return Ok(ui::not_found()) };
     let values = rsvp::current_values(&ctx.guests, &ctx.responses, &ctx.h);
     let addr = AddressView::Current { saved: q.address.is_some() };
-    Ok(render(&st, &token, &ctx, &values, &BTreeMap::new(), q.sent.is_some(), &addr).into_response())
+    Ok(remember(render(&st, &token, &ctx, &values, &BTreeMap::new(), q.sent.is_some(), &addr).into_response(), &token))
 }
 
 async fn submit(
@@ -151,7 +189,8 @@ fn render(
             p.salutation { "Dear " (h.greeting) "," }
             @match ctx.phase {
                 Phase::SaveTheDate => {
-                    p { "We're getting married, and we would love nothing more than to have you there. Please save the date. A formal invitation will follow." }
+                    p { "We're getting married, and we would love nothing more than to have you there." }
+                    p { "Please save the date. A formal invitation will follow." }
                 }
                 _ => {
                     p { "We would be honoured to have you celebrate with us. All the details are below." }
@@ -160,6 +199,7 @@ fn render(
                     }
                 }
             }
+            @if let Some(n) = &cfg.wedding.celebration_note { p.celebration { (n) } }
             div.actions {
                 a.button.ghost href={ "/i/" (token) "/calendar.ics" } { "Add to calendar" }
             }
@@ -190,7 +230,7 @@ fn render(
                             p.event-venue { (e.venue) }
                             @if !e.address.is_empty() {
                                 p.event-address {
-                                    a href={ "https://www.google.com/maps/search/?api=1&query=" (urlencoding::encode(&format!("{}, {}", e.venue, e.address))) } rel="noopener noreferrer" target="_blank" { (e.address) }
+                                    a href=(e.map_url()) rel="noopener noreferrer" target="_blank" { (e.address) }
                                 }
                             }
                             @if let Some(d) = &e.dress { p.event-dress { "Dress: " (d) } }
@@ -220,17 +260,9 @@ fn render(
             }
         }
 
-        // Travel/accommodation info belongs with the invitation, not the save the date.
-        @let info: Vec<_> = if ctx.phase == Phase::SaveTheDate { vec![] } else { cfg.wedding.info.iter().filter(|s| s.shown_to(h.australia)).collect() };
-        @if !info.is_empty() {
-            section.info {
-                @for s in info {
-                    article { h3 { (s.title) } p { (s.body) } }
-                }
-            }
-        }
     };
-    guest_page(cfg, &format!("{} | {}", h.greeting, cfg.title()), &st.monogram_svg, body)
+    let nav = ui::GuestNav { home: format!("/i/{token}"), pages: ctx.pages.clone(), active: "home".into() };
+    guest_page(cfg, &format!("{} | {}", h.greeting, cfg.title()), Some(&nav), body)
 }
 
 fn date_medium(iso: &str) -> String {
@@ -281,38 +313,22 @@ fn form(cfg: &Config, token: &str, ctx: &Ctx, values: &HashMap<String, String>, 
                             }
                         }
                     }
-                    @if cfg.rsvp.ask_dietary {
-                        label.field {
-                            span { "Dietary requirements or allergies" }
-                            input type="text" name=(field::diet(g.id)) value=(v(&field::diet(g.id))) maxlength="500" placeholder="None";
+                    // Name and dietary only matter once they accept something; guest.js hides them otherwise.
+                    @let att_keys = events.iter().filter(|e| e.dated() && g.invited(&ctx.h, &e.slug)).map(|e| field::att(g.id, &e.slug)).collect::<Vec<_>>().join(" ");
+                    @if g.is_plus_one() {
+                        div.plus-one data-show-when=(att_keys) {
+                            p.answer-sub { "Who are you bringing?" }
+                            div.two {
+                                label.field { span { "First name" } input type="text" name=(field::first(g.id)) value=(v(&field::first(g.id))) maxlength="80" autocomplete="off"; }
+                                label.field { span { "Last name" } input type="text" name=(field::last(g.id)) value=(v(&field::last(g.id))) maxlength="80" autocomplete="off"; }
+                            }
+                            @if let Some(m) = err(&field::first(g.id)) { (m) }
                         }
                     }
-                    @if g.plus_one_allowed {
-                        div.plus-one {
-                            p.answer-sub { "Bringing a guest?" }
-                            p.hint { "Leave blank if you're coming solo." }
-                            div.two {
-                                label.field { span { "First name" } input type="text" name=(field::p1_first(g.id)) value=(v(&field::p1_first(g.id))) maxlength="80" autocomplete="off"; }
-                                label.field { span { "Last name" } input type="text" name=(field::p1_last(g.id)) value=(v(&field::p1_last(g.id))) maxlength="80" autocomplete="off"; }
-                            }
-                            @if let Some(m) = err(&field::p1_first(g.id)) { (m) }
-                            @let meals = rsvp::meals_for(cfg, false);
-                            @for e in events.iter().filter(|e| e.meal && e.dated()) {
-                                @if !meals.is_empty() {
-                                    @let mk = field::p1_meal(g.id, &e.slug);
-                                    @let curm = v(&mk);
-                                    p.answer-sub { "Their dinner (" (e.name) ")" }
-                                    div.meal-grid {
-                                        @for m in &meals {
-                                            label.meal { input type="radio" name=(mk) value=(m.slug) checked[curm == m.slug]; span { strong { (m.name) } } }
-                                        }
-                                    }
-                                    @if let Some(m) = err(&mk) { (m) }
-                                }
-                            }
-                            @if cfg.rsvp.ask_dietary {
-                                label.field { span { "Their dietary requirements" } input type="text" name=(field::p1_diet(g.id)) value=(v(&field::p1_diet(g.id))) maxlength="500"; }
-                            }
+                    @if cfg.rsvp.ask_dietary {
+                        label.field data-show-when=(att_keys) {
+                            span { "Dietary requirements or allergies" }
+                            input type="text" name=(field::diet(g.id)) value=(v(&field::diet(g.id))) maxlength="500" placeholder="None";
                         }
                     }
                 }

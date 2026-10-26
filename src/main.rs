@@ -5,9 +5,11 @@ mod cli;
 mod config;
 mod db;
 mod email;
+mod gmail;
 mod journal;
 mod notify;
 mod rsvp;
+mod site;
 mod store;
 mod tokens;
 mod web;
@@ -85,6 +87,11 @@ async fn serve(cli: Cli) -> Result<()> {
         })?;
     }
 
+    db.with(|c| site::seed(c, &cfg))?;
+    let renamed = db.with(|c| store::refresh_all_names(c))?;
+    if renamed > 0 {
+        tracing::info!(renamed, "household names re-derived from their people");
+    }
     let state = web::AppState::new(cfg, env, db)?;
     let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build()?;
     tokio::spawn(notify::run(notify::Worker {
@@ -93,7 +100,10 @@ async fn serve(cli: Cli) -> Result<()> {
         env: state.env.clone(),
         renderer: state.renderer.clone(),
         http,
+        gmail: Arc::new(gmail::Sender::default()),
+        last_email: Default::default(),
     }));
+    tokio::spawn(notify::unanswered_invitations(state.db.clone(), state.cfg.clone()));
     tokio::spawn(backup::scheduler(state.db.clone(), state.cfg.clone(), Arc::clone(&state.env)));
     web::serve(state).await
 }

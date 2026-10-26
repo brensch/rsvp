@@ -15,7 +15,7 @@
     set par(leading: 0.45em)
     text(font: display, style: "italic", size: 9.5pt, fill: muted, data.wedding.return_address.join("\n"))
   })
-  place(dx: W - 22mm, dy: 11mm, monogram(size: 13mm))
+  place(dx: W - 36mm, dy: 9mm, monogram(size: 26mm))
   // recipient
   place(center + horizon, dy: 8mm, block(width: 120mm, align(center, {
     text(font: script, size: 25pt, fill: ink, it.envelope)

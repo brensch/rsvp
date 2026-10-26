@@ -6,16 +6,16 @@
 #let front(it) = {
   frame(card-w, card-h)
   block(width: 100%, height: 100%, inset: (x: 15mm, top: 19mm, bottom: 17mm), align(center, {
-    caps("Save the date", size: 7.5pt, tracking: 0.45em)
+    caps("Save the date", size: 12pt, tracking: 0.4em)
     v(1fr)
-    monogram(size: 31mm)
-    v(7mm)
-    text(font: display, size: 44pt, weight: 300, tracking: 0.01em)[#C.a_first]
+    monogram(size: 58mm)
+    v(6mm)
+    text(font: display, size: 33pt, weight: 300, tracking: 0.01em)[#C.a_first]
+    v(4mm)
+    text(font: display, style: "italic", size: 17pt, fill: accent)[and]
     v(2.5mm)
-    text(font: script, size: 25pt, fill: accent)[and]
-    v(1.5mm)
-    text(font: display, size: 44pt, weight: 300, tracking: 0.01em)[#C.b_first]
-    v(8mm)
+    text(font: display, size: 33pt, weight: 300, tracking: 0.01em)[#C.b_first]
+    v(7mm)
     diamond-rule(width: 50mm)
     v(6mm)
     text(font: serif, size: 10pt, tracking: 0.26em, upper(W.weekday) + h(0.5em) + "·" + h(0.5em) + str(W.day) + " " + upper(W.month) + h(0.5em) + "·" + h(0.5em) + str(W.year))
@@ -29,11 +29,15 @@
 #let back(it) = {
   frame(card-w, card-h)
   block(width: 100%, height: 100%, inset: (x: 16mm, top: 22mm, bottom: 17mm), align(center, {
-    text(font: script, size: 25pt, fill: accent)[Dear #it.greeting,]
-    v(7mm)
+    text(font: display, style: "italic", size: 21pt, fill: accent)[Dear #it.greeting,]
+    v(6mm)
     block(width: 92mm, {
       set par(leading: 0.62em)
       text(font: display, size: 14.5pt)[We're getting married,\ and we would love you to be there.]
+      if data.wedding.at("celebration_note", default: none) != none {
+        v(4mm)
+        text(font: display, style: "italic", size: 11.5pt, fill: muted, data.wedding.celebration_note)
+      }
     })
     v(1fr)
     diamond-rule(width: 30mm)

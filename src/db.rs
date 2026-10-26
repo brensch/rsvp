@@ -276,6 +276,100 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE households ADD COLUMN checked_at TEXT;
     ALTER TABLE households ADD COLUMN checked_by TEXT;
     "#,
+    // 10: guest website pages and photo gallery.
+    r#"
+    CREATE TABLE pages (
+        slug       TEXT PRIMARY KEY,
+        title      TEXT NOT NULL,
+        body       TEXT NOT NULL DEFAULT '',
+        audience   TEXT NOT NULL DEFAULT 'all' CHECK (audience IN ('all','australia','us')),
+        published  INTEGER NOT NULL DEFAULT 0,
+        sort       INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+    CREATE TABLE photos (
+        id          INTEGER PRIMARY KEY,
+        file        TEXT NOT NULL UNIQUE,
+        caption     TEXT NOT NULL DEFAULT '',
+        width       INTEGER NOT NULL,
+        height      INTEGER NOT NULL,
+        sort        INTEGER NOT NULL DEFAULT 0,
+        uploaded_by TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        deleted_at  TEXT
+    ) STRICT;
+    "#,
+    // 11: who added each household; households requested by helpers wait for approval;
+    // team members can be a partner's parent.
+    r#"
+    ALTER TABLE households ADD COLUMN added_by TEXT NOT NULL DEFAULT '';
+    ALTER TABLE households ADD COLUMN request_status TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN relation TEXT NOT NULL DEFAULT '';
+    ALTER TABLE invites ADD COLUMN relation TEXT NOT NULL DEFAULT '';
+    "#,
+    // 12: one name per household (how we address them). `name` mirrors `greeting`;
+    // the separate envelope name is gone.
+    r#"
+    UPDATE households SET name = greeting, envelope = '';
+    "#,
+    // 13: plus-ones are their own kind of person in the household ("Ben's plus one") instead of a
+    // per-person tick. A ticked +1 on someone living alone becomes a slot; with a second person it's dropped.
+    r#"
+    ALTER TABLE guests ADD COLUMN plus_one_label TEXT NOT NULL DEFAULT '';
+    INSERT INTO guests (household_id, first_name, last_name, plus_one_label, sort, created_at, updated_at)
+        SELECT g.household_id, '', '', g.first_name || '''s plus one', 1000,
+               strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        FROM guests g
+        WHERE g.plus_one_allowed = 1 AND g.archived_at IS NULL
+          AND (SELECT COUNT(*) FROM guests o
+               WHERE o.household_id = g.household_id AND o.archived_at IS NULL AND o.plus_one_of IS NULL) = 1;
+    ALTER TABLE guests DROP COLUMN plus_one_allowed;
+    "#,
+    // 14: events are invited per household, not per person. Where everyone in a household had
+    // the same exception (e.g. wedding only), the household takes it; other exceptions are dropped.
+    r#"
+    UPDATE households SET events = (
+            SELECT MIN(g.events) FROM guests g WHERE g.household_id = households.id AND g.archived_at IS NULL)
+        WHERE EXISTS (SELECT 1 FROM guests g WHERE g.household_id = households.id AND g.archived_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM guests g WHERE g.household_id = households.id AND g.archived_at IS NULL AND g.events IS NULL)
+          AND (SELECT COUNT(DISTINCT g.events) FROM guests g WHERE g.household_id = households.id AND g.archived_at IS NULL) = 1
+          AND (SELECT MIN(g.events) FROM guests g WHERE g.household_id = households.id AND g.archived_at IS NULL) <> '[]';
+    ALTER TABLE guests DROP COLUMN events;
+    "#,
+    // 15: a household we think probably won't come (for planning numbers).
+    r#"
+    ALTER TABLE households ADD COLUMN unlikely INTEGER NOT NULL DEFAULT 0;
+    "#,
+    // 16: one row per email sent to one address, and whether its card picture was loaded.
+    r#"
+    CREATE TABLE email_sends (
+        id             TEXT PRIMARY KEY,           -- random; appears in the card picture's URL
+        household_id   INTEGER NOT NULL REFERENCES households(id),
+        address        TEXT NOT NULL,
+        kind           TEXT NOT NULL,              -- save_the_date | invitation
+        test           INTEGER NOT NULL DEFAULT 0,
+        queued_at      TEXT NOT NULL,
+        sent_at        TEXT,
+        provider_id    TEXT NOT NULL DEFAULT '',
+        opened_at      TEXT,
+        last_opened_at TEXT,
+        opens          INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    CREATE INDEX email_sends_household ON email_sends(household_id);
+    -- Set when we've pinged Discord that an opened invitation has gone 48 hours without a reply.
+    ALTER TABLE households ADD COLUMN nudged_at TEXT;
+    "#,
+    // 17: the "From Australia" page becomes a section of Travel that only Australian
+    // households see (between `::: australia` and `:::`).
+    r#"
+    UPDATE pages SET
+        body = body || char(10) || '::: australia' || char(10)
+               || (SELECT body FROM pages WHERE slug = 'travel-from-australia') || char(10) || ':::' || char(10),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), updated_by = 'system'
+        WHERE slug = 'travel' AND EXISTS (SELECT 1 FROM pages WHERE slug = 'travel-from-australia');
+    DELETE FROM pages WHERE slug = 'travel-from-australia';
+    "#,
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -337,5 +431,69 @@ impl std::ops::Deref for Tx<'_> {
     type Target = Connection;
     fn deref(&self) -> &Connection {
         self.conn
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plus_one_ticks_become_slots() {
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..12] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version = 12").unwrap();
+        let ts = "2026-01-01T00:00:00Z";
+        for (hid, people) in [(1, &[("Ann", 1)][..]), (2, &[("Bo", 1), ("Cy", 0)][..]), (3, &[("Di", 0)][..])] {
+            conn.execute("INSERT INTO households (id, name, greeting, events, created_at, updated_at) VALUES (?1, 'h', 'h', '[]', ?2, ?2)", rusqlite::params![hid, ts]).unwrap();
+            for (name, p1) in people {
+                conn.execute(
+                    "INSERT INTO guests (household_id, first_name, plus_one_allowed, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+                    rusqlite::params![hid, name, p1, ts],
+                )
+                .unwrap();
+            }
+        }
+        migrate(&conn).unwrap();
+        let slots: Vec<(i64, String, String)> = conn
+            .prepare("SELECT household_id, first_name, plus_one_label FROM guests WHERE plus_one_label <> ''")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(slots, vec![(1, String::new(), "Ann's plus one".to_string())]);
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM guests", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 5);
+    }
+
+    #[test]
+    fn shared_event_exceptions_move_to_the_household() {
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..13] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version = 13").unwrap();
+        let ts = "2026-01-01T00:00:00Z";
+        let both = r#"["rehearsal-dinner","wedding"]"#;
+        // 1: everyone wedding-only -> household wedding-only. 2: only the kid had an exception -> dropped.
+        for (hid, people) in [(1, vec![Some(r#"["wedding"]"#), Some(r#"["wedding"]"#)]), (2, vec![None, Some(r#"["rehearsal-dinner"]"#)])] {
+            conn.execute("INSERT INTO households (id, name, greeting, events, created_at, updated_at) VALUES (?1, 'h', 'h', ?2, ?3, ?3)", rusqlite::params![hid, both, ts]).unwrap();
+            for ev in people {
+                conn.execute(
+                    "INSERT INTO guests (household_id, first_name, events, created_at, updated_at) VALUES (?1, 'x', ?2, ?3, ?3)",
+                    rusqlite::params![hid, ev, ts],
+                )
+                .unwrap();
+            }
+        }
+        migrate(&conn).unwrap();
+        let ev = |id: i64| conn.query_row("SELECT events FROM households WHERE id = ?1", [id], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(ev(1), r#"["wedding"]"#);
+        assert_eq!(ev(2), both);
+        let cols: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('guests') WHERE name = 'events'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cols, 0);
     }
 }

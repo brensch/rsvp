@@ -68,6 +68,9 @@ pub struct Wedding {
     /// One line printed on Australia-based households' cards and emails (travel heads-up).
     #[serde(default)]
     pub australia_note: Option<String>,
+    /// A line for everyone about a second celebration (save the date, its email and page).
+    #[serde(default)]
+    pub celebration_note: Option<String>,
 }
 
 fn default_offset() -> String {
@@ -86,15 +89,7 @@ pub struct InfoSection {
     pub audience: Option<String>,
 }
 
-impl InfoSection {
-    pub fn shown_to(&self, australia: bool) -> bool {
-        match self.audience.as_deref() {
-            Some("australia") => australia,
-            Some("us") => !australia,
-            _ => true,
-        }
-    }
-}
+
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Site {
@@ -115,6 +110,9 @@ fn default_bind() -> String {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Theme {
+    /// The American flower in the emblem: "poppy" (California) or "rose" (US national flower).
+    #[serde(default = "default_us_flower")]
+    pub us_flower: String,
     pub ink: String,
     pub muted: String,
     pub accent: String,
@@ -122,9 +120,14 @@ pub struct Theme {
     pub rule: String,
 }
 
+fn default_us_flower() -> String {
+    "poppy".into()
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self {
+            us_flower: default_us_flower(),
             ink: "#24211d".into(),
             muted: "#6f675c".into(),
             accent: "#8c6a3f".into(),
@@ -150,6 +153,10 @@ pub struct Event {
     pub venue: String,
     #[serde(default)]
     pub address: String,
+    /// What the map link searches for. Defaults to "venue, address", which finds named places
+    /// well; set it to just the address for e.g. a private home.
+    #[serde(default)]
+    pub map_query: Option<String>,
     #[serde(default)]
     pub dress: Option<String>,
     #[serde(default)]
@@ -166,6 +173,11 @@ pub struct Event {
 }
 
 impl Event {
+    pub fn map_url(&self) -> String {
+        let q = self.map_query.clone().unwrap_or_else(|| format!("{}, {}", self.venue, self.address));
+        format!("https://www.google.com/maps/search/?api=1&query={}", urlencoding::encode(&q))
+    }
+
     pub fn short_name(&self) -> &str {
         self.short.as_deref().unwrap_or(&self.name)
     }
@@ -228,9 +240,12 @@ impl Default for RsvpOptions {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct EmailConfig {
-    /// "Alex & Sam <hello@mail.example.com>"
+    /// Display name on emails, e.g. "Alex & Sam" (the address is the connected Gmail account's).
     #[serde(default)]
     pub from: Option<String>,
+    /// The Gmail account emails must come from; connecting any other account is refused.
+    #[serde(default)]
+    pub account: Option<String>,
     #[serde(default)]
     pub reply_to: Option<String>,
 }
@@ -384,7 +399,9 @@ pub struct Env {
     /// 32+ byte key for deriving guest link tokens. Rotating it invalidates every link.
     pub secret: Vec<u8>,
     pub discord_webhook: Option<String>,
-    pub resend_key: Option<String>,
+    /// OAuth client for sending through Gmail (Settings, Connect Gmail).
+    pub gmail_client_id: Option<String>,
+    pub gmail_client_secret: Option<String>,
     /// Google Address Validation API key (server-side only; restrict it to the server's IP).
     pub google_maps_key: Option<String>,
 }
@@ -403,7 +420,8 @@ impl Env {
             data_dir,
             secret,
             discord_webhook: opt("DISCORD_WEBHOOK_URL"),
-            resend_key: opt("RESEND_API_KEY"),
+            gmail_client_id: opt("GMAIL_CLIENT_ID"),
+            gmail_client_secret: opt("GMAIL_CLIENT_SECRET"),
             google_maps_key: opt("GOOGLE_MAPS_API_KEY"),
         })
     }

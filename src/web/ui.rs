@@ -16,6 +16,8 @@ static STATIC: &[(&str, &str, &str)] = &[
     ("passkey.js", "text/javascript; charset=utf-8", include_str!("../../static/passkey.js")),
     ("admin.js", "text/javascript; charset=utf-8", include_str!("../../static/admin.js")),
     ("guest.js", "text/javascript; charset=utf-8", include_str!("../../static/guest.js")),
+    // Chrome/Edge prepare a guest page as soon as someone hovers a link to it, so the click is instant.
+    ("speculation.json", "application/speculationrules+json", include_str!("../../static/speculation.json")),
 ];
 
 /// Cache-busting version derived from the static file contents.
@@ -43,13 +45,20 @@ pub async fn static_file(Path(file): Path<String>) -> Response {
 pub async fn font_file(Path(file): Path<String>) -> Response {
     match crate::assets::WEB_FONTS.iter().find(|(n, _)| *n == file) {
         Some((_, bytes)) => {
-            ([(header::CONTENT_TYPE, "font/ttf"), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], *bytes).into_response()
+            ([(header::CONTENT_TYPE, "font/woff2"), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], *bytes).into_response()
         }
         None => not_found(),
     }
 }
 
 fn head(title: &str, css: &str) -> Markup {
+    // Fetch the fonts straight away, alongside the CSS, so text draws once in the right font.
+    let fonts: &[&str] = if css == "site.css" {
+        // The faces every guest page draws above the fold (EB Garamond italic loads only if used).
+        &["CormorantGaramond-v2.woff2", "CormorantGaramond-Italic-v2.woff2", "EBGaramond-v2.woff2"]
+    } else {
+        &["CormorantGaramond-v2.woff2", "CormorantGaramond-Italic-v2.woff2"]
+    };
     html! {
         meta charset="utf-8";
         meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover";
@@ -57,23 +66,50 @@ fn head(title: &str, css: &str) -> Markup {
         meta name="referrer" content="same-origin";
         meta name="color-scheme" content="light";
         title { (title) }
+        @for f in fonts { link rel="preload" href={ "/fonts/" (f) } as="font" type="font/woff2" crossorigin; }
         link rel="stylesheet" href=(asset(css));
     }
 }
 
-pub fn guest_page(cfg: &Config, title: &str, monogram: &str, body: Markup) -> Markup {
+/// The wattle and olive wreath (tools/draw_emblem.py), placed straight into each page so it paints
+/// with the text instead of popping in after a separate image load.
+static EMBLEM_SVG: LazyLock<String> = LazyLock::new(|| {
+    let raw = include_str!("../../templates/art/emblem.svg");
+    let svg = &raw[raw.find("<svg").unwrap_or(0)..];
+    svg.replacen("<svg ", "<svg aria-hidden=\"true\" focusable=\"false\" ", 1)
+});
+
+/// Guest site navigation: the household's own invitation link plus published pages.
+pub struct GuestNav {
+    pub home: String,
+    pub pages: Vec<(String, String)>,
+    pub active: String,
+}
+
+pub fn guest_page(cfg: &Config, title: &str, nav: Option<&GuestNav>, body: Markup) -> Markup {
+    let initials: Vec<char> = cfg.monogram().chars().filter(|c| c.is_alphanumeric()).collect();
     html! {
         (DOCTYPE)
         html lang="en" {
             head { (head(title, "site.css")) }
             body.guest {
                 header.site-head {
-                    @if !monogram.is_empty() { div.monogram aria-hidden="true" { (PreEscaped(monogram)) } }
+                    a.monogram href=(nav.map(|n| n.home.as_str()).unwrap_or("/")) aria-label="Home" {
+                        (PreEscaped(EMBLEM_SVG.as_str()))
+                        span.initials {
+                            @if let [a, b] = initials.as_slice() { (a) span.amp { "&" } (b) } @else { (cfg.monogram()) }
+                        }
+                    }
+                }
+                @if let Some(n) = nav.filter(|n| !n.pages.is_empty()) {
+                    nav.site-nav aria-label="Wedding website" {
+                        a href=(n.home) aria-current=[(n.active == "home").then_some("page")] { "Invitation" }
+                        @for (slug, title) in &n.pages {
+                            a href={ "/" (slug) } aria-current=[(n.active == *slug).then_some("page")] { (title) }
+                        }
+                    }
                 }
                 main { (body) }
-                footer.site-foot {
-                    p { (cfg.couple.a_first) " & " (cfg.couple.b_first) " · " (cfg.wedding.location) }
-                }
                 script src=(asset("guest.js")) defer {}
             }
         }
@@ -108,6 +144,8 @@ pub fn admin_page(cfg: &Config, nav: &Nav, active: &str, title: &str, flash: Opt
                         (link("/admin", "dash", "Overview", 0))
                         (link("/admin/households", "households", "Households", 0))
                         (link("/admin/guests", "guests", "People", 0))
+                        (link("/admin/website", "website", "Website", 0))
+                        (link("/admin/gallery", "gallery", "Gallery", 0))
                         (link("/admin/stationery", "stationery", "Stationery", 0))
                         @if owner {
                             (link("/admin/send", "send", "Send", 0))

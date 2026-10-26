@@ -4,7 +4,7 @@
 {DOMAIN} {
 	encode zstd gzip
 	request_body {
-		max_size 1MB
+		max_size 150MB
 	}
 	header -Server
 	reverse_proxy 127.0.0.1:8080
@@ -14,6 +14,10 @@
 			roll_keep 10
 		}
 	}
+}
+
+www.{DOMAIN} {
+	redir https://{DOMAIN}{uri} permanent
 }
 
 # Bare IP / unknown hosts get nothing.

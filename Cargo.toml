@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-axum = { version = "0.8", features = ["macros", "form"] }
+axum = { version = "0.8", features = ["macros", "form", "multipart"] }
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 data-encoding = "2"
@@ -15,7 +15,7 @@ hmac = "0.12"
 maud = { version = "0.27", features = ["axum"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.9"
-reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["form", "json", "query", "rustls"] }
 rusqlite = { version = "0.40", features = ["bundled", "serde_json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,12 +32,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 typst = "0.15"
 typst-pdf = "0.15"
 typst-render = "0.15"
-typst-svg = "0.15"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 webauthn-rs = { version = "0.5", features = ["conditional-ui"] }
 flate2 = "1"
 typst-layout = "0.15"
 urlencoding = "2"
+# Gallery: decode phone photos, fix orientation, re-encode without metadata.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Guest pages: Markdown with raw HTML disabled.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 # Static OpenSSL (needed by webauthn-rs) so the binary cross-compiles and has no system libssl dependency.
 openssl = { version = "0.10", features = ["vendored"] }
 

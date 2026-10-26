@@ -3,6 +3,7 @@
 mod admin;
 mod auth;
 mod guest;
+mod site;
 mod ui;
 
 use std::collections::HashMap;
@@ -35,7 +36,6 @@ pub struct AppState {
     pub webauthn: Arc<Webauthn>,
     pub ceremonies: Arc<Mutex<HashMap<String, (Instant, auth::Ceremony)>>>,
     pub limiter: Arc<RateLimiter>,
-    pub monogram_svg: Arc<String>,
     pub http: reqwest::Client,
 }
 
@@ -44,10 +44,6 @@ impl AppState {
         let origin = Url::parse(&cfg.site.base_url)?;
         let webauthn = WebauthnBuilder::new(&cfg.site.rp_id, &origin)?.rp_name(&cfg.title()).build()?;
         let renderer = Renderer::new(&env.data_dir);
-        let monogram_svg = renderer.monogram_svg(&cfg).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "monogram render failed");
-            String::new()
-        });
         Ok(Self {
             journal: Journal::new(env.journal_path()),
             cfg: Arc::new(cfg),
@@ -57,7 +53,6 @@ impl AppState {
             webauthn: Arc::new(webauthn),
             ceremonies: Arc::new(Mutex::new(HashMap::new())),
             limiter: Arc::new(RateLimiter::default()),
-            monogram_svg: Arc::new(monogram_svg),
             http: reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?,
         })
     }
@@ -73,10 +68,12 @@ pub fn router(state: AppState) -> Router {
         .merge(guest::routes())
         .merge(auth::routes())
         .merge(admin::routes())
+        .merge(site::routes()) // last: it has the catch-all /{slug} page route
         .fallback(|| async { ui::not_found() })
         .layer(middleware::from_fn_with_state(state.clone(), guard))
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(256 * 1024))
-        .layer(tower_http::timeout::TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60)))
+        // Small bodies everywhere; the photo upload route raises its own limit.
+        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(180)))
         .with_state(state)
 }
 
@@ -208,8 +205,18 @@ fn with_headers(mut resp: Response, path: &str) -> Response {
     set(h, "cross-origin-resource-policy", "same-origin");
     set(h, "strict-transport-security", "max-age=63072000; includeSubDomains");
     set(h, "x-robots-tag", "noindex, nofollow, noarchive");
-    if !(path.starts_with("/static/") || path.starts_with("/fonts/")) {
+    if path.starts_with("/admin") {
         set(h, header::CACHE_CONTROL.as_str(), "no-store");
+    } else if !(path.starts_with("/static/") || path.starts_with("/fonts/") || path.starts_with("/media/") || h.contains_key(header::CACHE_CONTROL)) {
+        // Guest pages: always check with the server, but the browser may keep the page in memory
+        // so Back and Forward are instant (`no-store` would rule that out).
+        set(h, header::CACHE_CONTROL.as_str(), "private, no-cache");
+        let html = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|v| v.starts_with("text/html"));
+        if html {
+            if let Ok(v) = HeaderValue::from_str(&format!("\"{}\"", ui::asset("speculation.json"))) {
+                h.insert("speculation-rules", v);
+            }
+        }
     }
     resp
 }
