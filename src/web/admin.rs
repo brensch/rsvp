@@ -679,9 +679,33 @@ struct ListQuery {
     side: Option<String>,
     filter: Option<String>,
     added: Option<String>,
+    /// Read-receipt chips, comma separated, e.g. "std_unopened,inv_none".
+    read: Option<String>,
     sort: Option<String>,
     dir: Option<String>,
     m: Option<String>,
+}
+
+/// Read-receipt filter chips: (key, email kind, state, label).
+const READ_CHIPS: [(&str, &str, &str, &str); 6] = [
+    ("std_none", "save_the_date", "none", "Not sent"),
+    ("std_unopened", "save_the_date", "unopened", "Sent, not opened"),
+    ("std_opened", "save_the_date", "opened", "Opened"),
+    ("inv_none", "invitation", "none", "Not sent"),
+    ("inv_unopened", "invitation", "unopened", "Sent, not opened"),
+    ("inv_opened", "invitation", "opened", "Opened"),
+];
+
+/// Where a household is with one email: "none" (not sent), "unopened" or "opened".
+fn read_state(snap: &Snapshot, h: &Household, kind: &str) -> &'static str {
+    let sent = if kind == "save_the_date" { h.std_sent_at.is_some() } else { h.invite_sent_at.is_some() };
+    if snap.mail(h.id, kind).is_some_and(|m| m.opened > 0) {
+        "opened"
+    } else if sent {
+        "unopened"
+    } else {
+        "none"
+    }
 }
 
 /// People who ought to have their own email (everyone but children and unnamed plus-one
@@ -852,6 +876,15 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
     let cfg = &st.cfg;
     let needle = q.q.clone().unwrap_or_default().to_lowercase();
     let tier_q: Option<i64> = q.tier.as_deref().and_then(|t| t.parse().ok());
+    let read_sel: Vec<&str> =
+        q.read.as_deref().unwrap_or("").split(',').filter_map(|k| READ_CHIPS.iter().find(|c| c.0 == k).map(|c| c.0)).collect();
+    // OR within one email's states, AND across the two emails.
+    let read_ok = |h: &Household| {
+        ["save_the_date", "invitation"].iter().all(|kind| {
+            let wanted: Vec<&str> = READ_CHIPS.iter().filter(|c| c.1 == *kind && read_sel.contains(&c.0)).map(|c| c.2).collect();
+            wanted.is_empty() || wanted.contains(&read_state(&snap, h, kind))
+        })
+    };
     let mut rows: Vec<(&Household, Vec<Guest>, Status)> = snap
         .households
         .iter()
@@ -902,7 +935,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                 Some("no_calendar") => !snap.calendar.contains_key(&h.id),
                 _ => true,
             };
-            text_ok && status_ok && side_ok && tier_ok && added_ok && filter_ok
+            text_ok && status_ok && side_ok && tier_ok && added_ok && filter_ok && read_ok(h)
         })
         .collect();
     // Sort by the chosen column; ties fall back to the household name, A to Z.
@@ -948,8 +981,15 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
     let sel = |a: &Option<String>, v: &str| a.as_deref() == Some(v);
     let list_href = |extra: &[(&str, &str)]| {
         let mut parts = vec![];
-        for (k, v) in [("q", &q.q), ("tier", &q.tier), ("status", &q.status), ("side", &q.side), ("filter", &q.filter), ("added", &q.added)]
-        {
+        for (k, v) in [
+            ("q", &q.q),
+            ("tier", &q.tier),
+            ("status", &q.status),
+            ("side", &q.side),
+            ("filter", &q.filter),
+            ("added", &q.added),
+            ("read", &q.read),
+        ] {
             if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
                 parts.push(format!("{k}={}", urlencoding::encode(v)));
             }
@@ -965,6 +1005,38 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
     };
     // Keep the current filters and sort when an inline form falls back to a full POST + redirect.
     let back = list_href(&sort_params);
+    // The current page with the read chips set to `sel` (other filters and sort kept).
+    let read_href = |sel: &[&str]| {
+        let mut parts = vec![];
+        for (k, v) in [("q", &q.q), ("tier", &q.tier), ("status", &q.status), ("side", &q.side), ("filter", &q.filter), ("added", &q.added)]
+        {
+            if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
+                parts.push(format!("{k}={}", urlencoding::encode(v)));
+            }
+        }
+        if !sel.is_empty() {
+            parts.push(format!("read={}", urlencoding::encode(&sel.join(","))));
+        }
+        for (k, v) in &sort_params {
+            parts.push(format!("{k}={v}"));
+        }
+        if parts.is_empty() { "/admin/households".to_string() } else { format!("/admin/households?{}", parts.join("&")) }
+    };
+    // A chip's link switches it on, or off if it's already on.
+    let read_toggle_href = |key: &str| {
+        let mut sel = read_sel.clone();
+        match sel.iter().position(|k| *k == key) {
+            Some(i) => {
+                sel.remove(i);
+            }
+            None => sel.push(key),
+        }
+        read_href(&sel)
+    };
+    let read_counts: HashMap<&str, usize> = READ_CHIPS
+        .iter()
+        .map(|(key, kind, state, _)| (*key, snap.households.iter().filter(|h| read_state(&snap, h, kind) == *state).count()))
+        .collect();
     let tier_counts: Vec<(i64, usize, usize)> = (1..=3)
         .map(|t| {
             let hs: Vec<&Household> = snap.households.iter().filter(|h| h.tier == t).collect();
@@ -1028,9 +1100,27 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                     @for a in &added_by_values { option value=(a) selected[q.added.as_deref() == Some(a.as_str())] { "Added by " (a) } }
                 }
                 @for (k, v) in &sort_params { input type="hidden" name=(k) value=(v); }
+                @if !read_sel.is_empty() { input type="hidden" name="read" value=(read_sel.join(",")); }
                 noscript { button.button type="submit" { "Filter" } }
             }
             a.button.primary href="/admin/households/new" { @if s.user.is_owner() { "New household" } @else { "Request a household" } }
+        }
+        div.read-filters role="group" aria-label="Filter by email read receipts" {
+            @for (kind, label) in [("save_the_date", "Save the date"), ("invitation", "Invitation")] {
+                div.read-group {
+                    span.read-label { (label) }
+                    @for (key, _, _, chip) in READ_CHIPS.iter().filter(|c| c.1 == kind) {
+                        @let on = read_sel.contains(key);
+                        a.fchip href=(read_toggle_href(key)) aria-pressed=(if on { "true" } else { "false" })
+                            title=(if on { "Click again to remove this filter" } else { "Show only these (combine as many as you like)" }) {
+                            (chip) " " span.fchip-n { (read_counts.get(key).copied().unwrap_or(0)) }
+                        }
+                    }
+                }
+            }
+            @if !read_sel.is_empty() {
+                a.small href=(read_href(&[])) { "Clear" }
+            }
         }
         @if !requests.is_empty() {
             section.card.requests {
