@@ -422,3 +422,4 @@ td.events-cell .chips-toggle { flex-direction: column; align-items: flex-start; 
 .fchip[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
 .fchip[aria-pressed="true"]::before { content: "✓ "; }
 .fchip-n { opacity: .6; font-variant-numeric: tabular-nums; }
+.read-person.read-noemail { color: #b3a993; font-style: italic; }

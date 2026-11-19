@@ -858,6 +858,10 @@ fn mail_read(cfg: &Config, snap: &Snapshot, h: &Household, guests: &[Guest]) -> 
                         (who(&m.address)) " · " (text) @if state != "unopened" { @if let Some(t) = at { " " (day(t)) } }
                     }
                 }
+                // Grown-ups with no email address of their own didn't get this one.
+                @for g in guests.iter().filter(|g| !g.is_child && !g.unnamed_plus_one() && g.plus_one_of.is_none() && g.email.trim().is_empty()) {
+                    div.read-person.read-noemail title="No email address, so no email was sent to them" { (g.first_name) " · no email" }
+                }
             }
         }
     }
