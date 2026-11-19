@@ -601,6 +601,22 @@ pub struct EmailSend {
     pub opened_at: Option<String>,
     pub last_opened_at: Option<String>,
     pub opens: i64,
+    pub clicked_at: Option<String>,
+}
+
+impl EmailSend {
+    /// "clicked", "opened" or "unopened" (sent), or "queued".
+    pub fn state(&self) -> &'static str {
+        if self.clicked_at.is_some() {
+            "clicked"
+        } else if self.opened_at.is_some() {
+            "opened"
+        } else if self.sent_at.is_some() {
+            "unopened"
+        } else {
+            "queued"
+        }
+    }
 }
 
 impl EmailSend {
@@ -616,6 +632,7 @@ impl EmailSend {
             opened_at: r.get("opened_at")?,
             last_opened_at: r.get("last_opened_at")?,
             opens: r.get("opens")?,
+            clicked_at: r.get("clicked_at")?,
         })
     }
 }
@@ -650,6 +667,27 @@ pub fn record_open(conn: &Connection, id: &str) -> Result<Option<EmailSend>> {
         return Ok(None);
     }
     get_send(conn, id)
+}
+
+/// Someone arrived from the link in this email: remember the first time. Only counts for the
+/// household the email was for (the id in the link must match the household's own link).
+pub fn record_click(conn: &Connection, send_id: &str, household_id: i64) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE email_sends SET clicked_at = ?1 WHERE id = ?2 AND household_id = ?3 AND clicked_at IS NULL",
+        params![now(), send_id, household_id],
+    )?;
+    Ok(n > 0)
+}
+
+/// Every real (not test) email that has gone out, per household, oldest first.
+pub fn sent_emails(conn: &Connection) -> Result<HashMap<i64, Vec<EmailSend>>> {
+    let mut st = conn.prepare("SELECT * FROM email_sends WHERE test = 0 AND sent_at IS NOT NULL ORDER BY sent_at")?;
+    let mut out: HashMap<i64, Vec<EmailSend>> = HashMap::new();
+    for s in st.query_map([], EmailSend::from_row)? {
+        let s = s?;
+        out.entry(s.household_id).or_default().push(s);
+    }
+    Ok(out)
 }
 
 pub fn sends_for(conn: &Connection, household_id: i64) -> Result<Vec<EmailSend>> {
@@ -1364,6 +1402,38 @@ pub mod tests {
             let n: i64 =
                 c.query_row("SELECT COUNT(*) FROM outbox WHERE kind = 'discord' AND payload LIKE '%hasn''t replied%'", [], |r| r.get(0))?;
             assert_eq!(n, 1);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn email_clicks_are_credited_to_the_right_person() {
+        let db = mem();
+        db.with(|c| {
+            let one = |name: &str| HouseholdInput {
+                guests: vec![GuestInput { first_name: Some(name.into()), ..Default::default() }],
+                ..Default::default()
+            };
+            let hid = create_household(c, "t", &[1; 32], &one("Ada"), &[])?;
+            let other = create_household(c, "t", &[1; 32], &one("Bo"), &[])?;
+            let ada = create_send(c, hid, "ada@example.com", "save_the_date", false)?;
+            let cy = create_send(c, hid, "cy@example.com", "save_the_date", false)?;
+            mark_send_sent(c, &ada, "g1")?;
+            mark_send_sent(c, &cy, "g2")?;
+            assert_eq!(get_send(c, &ada)?.unwrap().state(), "unopened");
+            assert!(!record_click(c, &ada, other)?, "an id only counts on its own household's link");
+            assert!(record_click(c, &ada, hid)?);
+            let first = get_send(c, &ada)?.unwrap().clicked_at.unwrap();
+            assert!(!record_click(c, &ada, hid)?, "first click is kept");
+            assert_eq!(get_send(c, &ada)?.unwrap().clicked_at.unwrap(), first);
+            assert_eq!(get_send(c, &ada)?.unwrap().state(), "clicked");
+            assert_eq!(get_send(c, &cy)?.unwrap().state(), "unopened", "only the person who clicked");
+            record_open(c, &cy)?;
+            assert_eq!(get_send(c, &cy)?.unwrap().state(), "opened");
+            let sent = sent_emails(c)?;
+            assert_eq!(sent[&hid].len(), 2);
+            assert!(!sent.contains_key(&other));
             Ok(())
         })
         .unwrap();

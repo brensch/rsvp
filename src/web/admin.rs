@@ -362,6 +362,8 @@ struct Snapshot {
     mail: HashMap<(i64, String), store::MailStat>,
     /// When each household last added its events to a calendar.
     calendar: HashMap<i64, String>,
+    /// Every real email that has gone out, per household (with opened / clicked).
+    sent: HashMap<i64, Vec<store::EmailSend>>,
 }
 
 impl Snapshot {
@@ -374,6 +376,7 @@ impl Snapshot {
                     responses: store::all_responses(c)?,
                     mail: store::mail_stats(c)?,
                     calendar: store::calendar_last_downloads(c)?,
+                    sent: store::sent_emails(c)?,
                 })
             })
             .await
@@ -541,22 +544,23 @@ async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Que
             }
             div.table-wrap.flush {
                 table.tier-table {
-                    thead { tr { th {} th.num { "Sent" } th { "Opened (of sent)" } th {} } }
+                    thead { tr { th {} th.num { "Sent" } th { "Opened (of sent)" } th { "Clicked (of sent)" } th {} } }
                     tbody {
-                        @for (kind, label, sent_f, opened_f, unopened_f) in [
-                            ("save_the_date", "Save the date", "std_sent", "std_opened", "std_sent_unopened"),
-                            ("invitation", "Invitation", "invite_sent", "invite_opened", "invite_sent_unopened"),
-                        ] {
-                            @let sent: Vec<&Household> = snap.households.iter().filter(|h| if kind == "save_the_date" { h.std_sent_at.is_some() } else { h.invite_sent_at.is_some() }).collect();
-                            @let opened = sent.iter().filter(|h| snap.mail(h.id, kind).is_some_and(|m| m.opened > 0)).count();
+                        @for (kind, label, p) in [("save_the_date", "Save the date", "std"), ("invitation", "Invitation", "inv")] {
+                            @let states: Vec<&str> = snap.households.iter().map(|h| read_state(&snap, h, kind)).collect();
+                            @let sent = states.iter().filter(|st| **st != "none").count();
+                            @let opened = states.iter().filter(|st| matches!(**st, "opened" | "clicked")).count();
+                            @let clicked = states.iter().filter(|st| **st == "clicked").count();
                             tr {
                                 td.strong { (label) }
-                                td.num.big { a href={ "/admin/households?filter=" (sent_f) } { (sent.len()) } small.muted { " / " (total) } }
-                                td { (progress(opened, sent.len())) }
+                                td.num.big { (sent) small.muted { " / " (total) } }
+                                td { (progress(opened, sent)) }
+                                td { (progress(clicked, sent)) }
                                 td.small {
-                                    @if !sent.is_empty() {
-                                        a href={ "/admin/households?filter=" (opened_f) } { "Opened" } " · "
-                                        a href={ "/admin/households?filter=" (unopened_f) } { "Not opened yet" }
+                                    @if sent > 0 {
+                                        a href={ "/admin/households?read=" (p) "_unopened" } { "Not opened" } " · "
+                                        a href={ "/admin/households?read=" (p) "_opened" } { "Opened, not clicked" } " · "
+                                        a href={ "/admin/households?read=" (p) "_clicked" } { "Clicked" }
                                     }
                                 }
                             }
@@ -686,26 +690,46 @@ struct ListQuery {
     m: Option<String>,
 }
 
-/// Read-receipt filter chips: (key, email kind, state, label).
-const READ_CHIPS: [(&str, &str, &str, &str); 6] = [
+/// Read-receipt filter chips: (key, email kind, state, label). The states are exclusive steps:
+/// not sent -> sent, not opened -> opened (not clicked) -> clicked.
+const READ_CHIPS: [(&str, &str, &str, &str); 8] = [
     ("std_none", "save_the_date", "none", "Not sent"),
-    ("std_unopened", "save_the_date", "unopened", "Sent, not opened"),
-    ("std_opened", "save_the_date", "opened", "Opened"),
+    ("std_unopened", "save_the_date", "unopened", "Not opened"),
+    ("std_opened", "save_the_date", "opened", "Opened, not clicked"),
+    ("std_clicked", "save_the_date", "clicked", "Clicked"),
     ("inv_none", "invitation", "none", "Not sent"),
-    ("inv_unopened", "invitation", "unopened", "Sent, not opened"),
-    ("inv_opened", "invitation", "opened", "Opened"),
+    ("inv_unopened", "invitation", "unopened", "Not opened"),
+    ("inv_opened", "invitation", "opened", "Opened, not clicked"),
+    ("inv_clicked", "invitation", "clicked", "Clicked"),
 ];
 
-/// Where a household is with one email: "none" (not sent), "unopened" or "opened".
-fn read_state(snap: &Snapshot, h: &Household, kind: &str) -> &'static str {
-    let sent = if kind == "save_the_date" { h.std_sent_at.is_some() } else { h.invite_sent_at.is_some() };
-    if snap.mail(h.id, kind).is_some_and(|m| m.opened > 0) {
-        "opened"
-    } else if sent {
-        "unopened"
-    } else {
-        "none"
+/// How far one step is along the way (for sorting).
+fn read_rank(state: &str) -> i64 {
+    match state {
+        "clicked" => 3,
+        "opened" => 2,
+        "unopened" => 1,
+        _ => 0,
     }
+}
+
+/// Where a household is with one email: the furthest anyone in it got ("none" if not sent).
+/// Emails sent before clicks were tracked count as clicked if the household's page was visited
+/// after the email went out.
+fn read_state(snap: &Snapshot, h: &Household, kind: &str) -> &'static str {
+    let sent_at = if kind == "save_the_date" { h.std_sent_at.as_deref() } else { h.invite_sent_at.as_deref() };
+    let Some(sent_at) = sent_at else { return "none" };
+    let visited_after = h.last_viewed_at.as_deref().is_some_and(|v| v >= sent_at);
+    let best = snap
+        .sent
+        .get(&h.id)
+        .into_iter()
+        .flatten()
+        .filter(|m| m.kind == kind)
+        .map(|m| m.state())
+        .max_by_key(|st| read_rank(st))
+        .unwrap_or("unopened");
+    if visited_after && read_rank(best) < 3 { "clicked" } else { best }
 }
 
 /// People who ought to have their own email (everyone but children and unnamed plus-one
@@ -803,15 +827,39 @@ fn australia_toggle(csrf: &str, h: &Household, back: &str) -> Markup {
     }
 }
 
-/// One line per email that has gone out: "✓ Save the date opened 18 Nov" or "… sent 18 Nov, not opened".
-fn mail_read(cfg: &Config, what: &str, sent_at: Option<&str>, stat: Option<&store::MailStat>) -> Markup {
+/// Read receipts for one household: for each email that has gone out, one line per person
+/// ("Alyssa · clicked 18 Nov"), named from the guest list where the address matches.
+fn mail_read(cfg: &Config, snap: &Snapshot, h: &Household, guests: &[Guest]) -> Markup {
     let day = |ts: &str| when(cfg, ts).split(',').next().unwrap_or("").trim_end_matches(char::is_numeric).trim().to_string();
-    let Some(sent) = sent_at else { return html! {} };
-    match stat.and_then(|m| m.first_opened_at.as_deref()) {
-        Some(o) => {
-            html! { div.read-yes title={ (what) " sent " (when(cfg, sent)) ", first opened " (when(cfg, o)) } { "✓ " (what) " opened " (day(o)) } }
+    let who = |addr: &str| -> String {
+        guests
+            .iter()
+            .find(|g| g.email.trim().eq_ignore_ascii_case(addr))
+            .map(|g| g.first_name.clone())
+            .unwrap_or_else(|| if h.email.trim().eq_ignore_ascii_case(addr) { "Household email".into() } else { addr.to_string() })
+    };
+    let sends: Vec<&store::EmailSend> = snap.sent.get(&h.id).map(|v| v.iter().collect()).unwrap_or_default();
+    html! {
+        @for (kind, label) in [("save_the_date", "Save the date"), ("invitation", "Invitation")] {
+            @let mine: Vec<&&store::EmailSend> = sends.iter().filter(|m| m.kind == kind).collect();
+            @if !mine.is_empty() {
+                div.read-kind { (label) }
+                @for m in mine {
+                    @let state = m.state();
+                    @let (text, at) = match state {
+                        "clicked" => ("clicked", m.clicked_at.as_deref()),
+                        "opened" => ("opened", m.opened_at.as_deref()),
+                        _ => ("not opened", m.sent_at.as_deref()),
+                    };
+                    div class={ "read-person read-" (state) }
+                        title={ (m.address) " · sent " (m.sent_at.as_deref().map(|t| when(cfg, t)).unwrap_or_default())
+                            (m.opened_at.as_deref().map(|t| format!(" · opened {}", when(cfg, t))).unwrap_or_default())
+                            (m.clicked_at.as_deref().map(|t| format!(" · clicked {}", when(cfg, t))).unwrap_or_default()) } {
+                        (who(&m.address)) " · " (text) @if state != "unopened" { @if let Some(t) = at { " " (day(t)) } }
+                    }
+                }
+            }
         }
-        None => html! { div.read-no title={ (what) " sent " (when(cfg, sent)) } { (what) " sent " (day(sent)) ", not opened" } },
     }
 }
 
@@ -955,12 +1003,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                 "invited" => h.events.len() as i64,
                 "checked" => h.checked_at.is_some() as i64,
                 // Opened (2) > sent but not opened (1) > not sent (0), save the date then invitation.
-                "read" => {
-                    let state = |sent: bool, kind: &str| -> i64 {
-                        if snap.mail(h.id, kind).is_some_and(|m| m.opened > 0) { 2 } else { sent as i64 }
-                    };
-                    state(h.invite_sent_at.is_some(), "invitation") * 3 + state(h.std_sent_at.is_some(), "save_the_date")
-                }
+                "read" => read_rank(read_state(&snap, h, "invitation")) * 4 + read_rank(read_state(&snap, h, "save_the_date")),
                 "reply" => match status {
                     Status::NoReply => 0,
                     Status::Declined => 1,
@@ -1220,10 +1263,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                             td { (unlikely_toggle(&s.csrf, h, &back)) }
                             td.events-cell { (event_toggles(cfg, &s.csrf, h, &back)) }
                             td { (checked_toggle(cfg, &s.csrf, h, &back)) }
-                            td.read {
-                                (mail_read(cfg, "Save the date", h.std_sent_at.as_deref(), snap.mail(h.id, "save_the_date")))
-                                (mail_read(cfg, "Invitation", h.invite_sent_at.as_deref(), snap.mail(h.id, "invitation")))
-                            }
+                            td.read { (mail_read(cfg, &snap, h, gs)) }
                             td.reply {
                                 (status_badge(*status))
                                 div.reply-meta {
@@ -1534,7 +1574,7 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
                     h2 { "Emails" }
                     @if sends.is_empty() { p.muted { "No emails sent yet." } } @else {
                         table.compact {
-                            thead { tr { th { "Email" } th { "To" } th { "Sent" } th { "Opened" } } }
+                            thead { tr { th { "Email" } th { "To" } th { "Sent" } th { "Opened" } th { "Clicked" } } }
                             tbody {
                                 @for m in &sends {
                                     tr {
@@ -1544,6 +1584,12 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
                                         td.small {
                                             @match &m.opened_at {
                                                 Some(t) => { span.good { (when(cfg, t)) } @if m.opens > 1 { span.muted { " · " (m.opens) " times" } } }
+                                                None => { span.muted { "not yet" } }
+                                            }
+                                        }
+                                        td.small {
+                                            @match &m.clicked_at {
+                                                Some(t) => { span.good { (when(cfg, t)) } }
                                                 None => { span.muted { "not yet" } }
                                             }
                                         }

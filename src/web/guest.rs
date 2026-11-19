@@ -152,10 +152,18 @@ async fn load(st: &AppState, token: &str) -> AppResult<Option<Ctx>> {
 struct PageQuery {
     sent: Option<String>,
     address: Option<String>,
+    /// The email this visit came from (see email::build).
+    e: Option<String>,
 }
 
 async fn page(State(st): State<AppState>, Path(token): Path<String>, Query(q): Query<PageQuery>) -> AppResult {
     let Some(ctx) = load(&st, &token).await? else { return Ok(ui::not_found()) };
+    if let Some(e) = q.e.filter(|e| crate::tokens::plausible_token(e)) {
+        let hid = ctx.h.id;
+        st.db.call(move |c| store::record_click(c, &e, hid)).await?;
+        // Clean address bar (and bookmarks) without the email id.
+        return Ok(remember(redirect(&format!("/i/{token}")), &token));
+    }
     let values = rsvp::current_values(&ctx.guests, &ctx.responses, &ctx.h);
     let addr = AddressView::Current { saved: q.address.is_some() };
     Ok(remember(render(&st, &token, &ctx, &values, &BTreeMap::new(), q.sent.is_some(), &addr).into_response(), &token))

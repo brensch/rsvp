@@ -381,6 +381,11 @@ const MIGRATIONS: &[&str] = &[
     ) STRICT;
     CREATE INDEX calendar_downloads_household ON calendar_downloads(household_id, at);
     "#,
+    // 19: when each email's button (or picture link) was first clicked, so a click is credited to
+    // the person whose email it came from.
+    r#"
+    ALTER TABLE email_sends ADD COLUMN clicked_at TEXT;
+    "#,
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {

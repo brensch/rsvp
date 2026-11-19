@@ -63,6 +63,8 @@ pub fn build(renderer: &Renderer, cfg: &Config, env: &Env, draft: Draft) -> Resu
     };
     let token = crate::store::household_token(&env.secret, &h);
     let url = assets::link(cfg, &token);
+    // The link in the email carries this email's id, so a click is credited to this person.
+    let click_url = format!("{url}?e={send_id}");
     let greeting = h.greeting.clone();
     let australia = h.australia;
 
@@ -129,7 +131,7 @@ pub fn build(renderer: &Renderer, cfg: &Config, env: &Env, draft: Draft) -> Resu
                     tr { td align="center" bgcolor=(t.paper) style={ "padding:14px 0 40px;background:" (t.paper) } {
                         table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor=(t.paper) style={ "max-width:540px;font-family:" (serif) ";text-align:center;background:" (t.paper) } {
                             tr { td align="center" {
-                                a href=(url) { img src=(card_src) width="540" alt=(header_alt) style={ "display:block;margin:0 auto;width:100%;max-width:540px;height:auto;border:0;font-family:" (serif) ";font-size:16px;color:" (t.ink) }; }
+                                a href=(click_url) { img src=(card_src) width="540" alt=(header_alt) style={ "display:block;margin:0 auto;width:100%;max-width:540px;height:auto;border:0;font-family:" (serif) ";font-size:16px;color:" (t.ink) }; }
                             } }
                             @if !sentence.trim().is_empty() || !extra.is_empty() {
                                 tr { td style={ "font-size:17px;line-height:1.6;color:" (t.ink) ";padding:30px 4px 0" } {
@@ -138,7 +140,7 @@ pub fn build(renderer: &Renderer, cfg: &Config, env: &Env, draft: Draft) -> Resu
                                 } }
                             }
                             tr { td style="padding:28px 0 0" {
-                                a href=(url) style={ "display:inline-block;background:" (t.accent) ";color:" (t.paper) ";font-size:15px;letter-spacing:2px;text-transform:uppercase;text-decoration:none;padding:15px 30px;border-radius:2px" } { (button) }
+                                a href=(click_url) style={ "display:inline-block;background:" (t.accent) ";color:" (t.paper) ";font-size:15px;letter-spacing:2px;text-transform:uppercase;text-decoration:none;padding:15px 30px;border-radius:2px" } { (button) }
                             } }
                             @if !sign_off.trim().is_empty() {
                                 tr { td style={ "font-size:18px;font-style:italic;line-height:1.5;color:" (t.muted) ";padding:30px 12px 0" } { (sign_off) } }
@@ -158,7 +160,7 @@ pub fn build(renderer: &Renderer, cfg: &Config, env: &Env, draft: Draft) -> Resu
     if !sentence.trim().is_empty() {
         text.push_str(&format!("{sentence}\n\n"));
     }
-    text.push_str(&format!("{button}: {url}\n"));
+    text.push_str(&format!("{button}: {click_url}\n"));
     if !sign_off.trim().is_empty() {
         text.push_str(&format!("\n{sign_off}\n"));
     }

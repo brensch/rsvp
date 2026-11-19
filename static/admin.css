@@ -401,9 +401,13 @@ td.emails { white-space: nowrap; }
 .emails-all { color: var(--good); }
 
 /* Read receipts in the households table */
-td.read { white-space: nowrap; font-size: 12.5px; line-height: 1.5; }
-.read-yes { color: #9a7a12; font-weight: 600; }
-.read-no { color: var(--muted); }
+td.read { white-space: nowrap; font-size: 12.5px; line-height: 1.45; }
+.read-kind { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
+.read-kind:first-child { margin-top: 0; }
+.read-person.read-unopened { color: var(--muted); }
+.read-person.read-opened { color: #9a7a12; font-weight: 600; }
+.read-person.read-clicked { color: var(--good); font-weight: 600; }
+.read-person.read-clicked::before { content: "✓ "; }
 
 /* Households page: use the full width; "Invited to" chips stack. */
 .main:has(table.list.households) { max-width: none; }
