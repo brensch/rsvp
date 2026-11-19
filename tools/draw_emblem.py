@@ -28,8 +28,8 @@ POPPY = "#ec8420"       # California poppy orange
 POPPY_LIGHT = "#f6b443"
 POPPY_DARK = "#d26614"
 POPPY_CENTRE = "#c58a1f"
-RIBBON = "#a0702f"     # bow: caramel brown, the darker shade of both the gold wattle and orange poppies
-RIBBON_D = "#6f4b1f"
+RIBBON = "#8c1c2b"     # bow: claret cord; deep wine red, the gold wattle pops against it
+RIBBON_D = "#480e16"   # knot
 
 out = []
 
@@ -305,31 +305,26 @@ def poppies():
 
 
 def bow():
+    """Thick claret cord tied in a bow, its tails curling back towards the centre."""
     x, y = CX, BASE_Y + 4
-    # tails
+    w = 5.6
     for s in (-1, 1):
+        # tail: sweeps out and down, then curls back in
         out.append(
-            f'<path d="M{f(x)},{f(y)} C{f(x+s*14)},{f(y+26)} {f(x+s*8)},{f(y+44)} {f(x+s*30)},{f(y+70)} '
-            f'L{f(x+s*38)},{f(y+60)} L{f(x+s*40)},{f(y+74)} C{f(x+s*18)},{f(y+48)} {f(x+s*20)},{f(y+26)} {f(x+s*4)},{f(y+4)}Z" '
-            f'fill="{RIBBON}" stroke="{RIBBON_D}" stroke-width="0.8"/>'
+            f'<path d="M{f(x)},{f(y)} C{f(x+s*10)},{f(y+22)} {f(x+s*30)},{f(y+28)} {f(x+s*38)},{f(y+46)} '
+            f'C{f(x+s*46)},{f(y+64)} {f(x+s*34)},{f(y+78)} {f(x+s*24)},{f(y+70)} '
+            f'C{f(x+s*18)},{f(y+64)} {f(x+s*24)},{f(y+56)} {f(x+s*30)},{f(y+60)}" '
+            f'fill="none" stroke="{RIBBON}" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"/>'
         )
-    # loops: an outer ribbon edge, the darker inside of the loop showing through its opening,
-    # and a fold where the ribbon turns
     for s in (-1, 1):
+        # loop
         out.append(
-            f'<path d="M{f(x)},{f(y)} C{f(x+s*14)},{f(y-34)} {f(x+s*58)},{f(y-34)} {f(x+s*52)},{f(y-6)} '
-            f'C{f(x+s*48)},{f(y+14)} {f(x+s*20)},{f(y+12)} {f(x)},{f(y)}Z" fill="{RIBBON}" stroke="{RIBBON_D}" stroke-width="0.9"/>'
-        )
-        out.append(
-            f'<path d="M{f(x+s*10)},{f(y-4)} C{f(x+s*18)},{f(y-24)} {f(x+s*44)},{f(y-24)} {f(x+s*42)},{f(y-8)} '
-            f'C{f(x+s*40)},{f(y+2)} {f(x+s*22)},{f(y+2)} {f(x+s*10)},{f(y-4)}Z" fill="{RIBBON_D}" opacity="0.55"/>'
-        )
-        out.append(
-            f'<path d="M{f(x+s*44)},{f(y-20)} C{f(x+s*52)},{f(y-14)} {f(x+s*52)},{f(y-4)} {f(x+s*46)},{f(y+4)}" '
-            f'fill="none" stroke="#d4a764" stroke-width="1.6" stroke-linecap="round" opacity="0.8"/>'
+            f'<path d="M{f(x)},{f(y)} C{f(x+s*16)},{f(y-26)} {f(x+s*48)},{f(y-22)} {f(x+s*42)},{f(y-4)} '
+            f'C{f(x+s*38)},{f(y+10)} {f(x+s*14)},{f(y+6)} {f(x)},{f(y)}" '
+            f'fill="none" stroke="{RIBBON}" stroke-width="{w}" stroke-linecap="round" stroke-linejoin="round"/>'
         )
     # knot
-    out.append(f'<ellipse cx="{f(x)}" cy="{f(y)}" rx="8" ry="7" fill="{RIBBON}" stroke="{RIBBON_D}" stroke-width="0.8"/>')
+    out.append(f'<circle cx="{f(x)}" cy="{f(y)}" r="{f(w*1.6)}" fill="{RIBBON_D}"/>')
 
 
 wattle()
