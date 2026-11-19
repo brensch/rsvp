@@ -75,10 +75,7 @@ fn schedule(cfg: &crate::config::Config, h: &Household) -> Markup {
                             @if let Some(t) = e.start() {
                                 span.t-day { (words::weekday_name(t.date().weekday())) }
                                 span.t-date { (t.date().day()) " " (words::month_name(t.date().month())) }
-                                span.t-time {
-                                    (words::time_short(t))
-                                    @if let Some(end) = e.ends.as_deref().and_then(|x| crate::config::parse_local(x).ok()) { " – " (words::time_short(end)) }
-                                }
+                                span.t-time { (e.time_text().unwrap_or_default()) }
                             } @else {
                                 span.t-date { (cfg.prose.t("website.events.date_tba")) }
                             }

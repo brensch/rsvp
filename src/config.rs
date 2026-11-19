@@ -139,6 +139,10 @@ pub struct Event {
     pub starts: Option<String>,
     #[serde(default)]
     pub ends: Option<String>,
+    /// What guests see for the time ("Evening", "5pm"), instead of the start–end times.
+    /// Calendar files still use `starts`/`ends`.
+    #[serde(default)]
+    pub time_label: Option<String>,
     pub venue: String,
     #[serde(default)]
     pub address: String,
@@ -178,6 +182,18 @@ impl Event {
     }
     pub fn start(&self) -> Option<PrimitiveDateTime> {
         self.starts.as_deref().and_then(|s| parse_local(s).ok())
+    }
+    /// The time as guests see it: `time_label` if set, else "5 pm – 11 pm" from starts/ends.
+    pub fn time_text(&self) -> Option<String> {
+        if let Some(l) = self.time_label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+            return Some(l.to_string());
+        }
+        let t = self.start()?;
+        let short = crate::assets::words::time_short;
+        Some(match self.ends.as_deref().and_then(|x| parse_local(x).ok()) {
+            Some(end) => format!("{} – {}", short(t), short(end)),
+            None => short(t),
+        })
     }
     /// Guests can RSVP once the event has a date.
     pub fn dated(&self) -> bool {

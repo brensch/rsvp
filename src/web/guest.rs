@@ -291,10 +291,7 @@ fn render(
                             p.kicker { (e.name) }
                             @if let Some(t) = e.start() {
                                 p.event-when { (words::date_long(t.date())) }
-                                p.event-time {
-                                    (words::time_short(t))
-                                    @if let Some(end) = e.ends.as_deref().and_then(|x| parse_local(x).ok()) { " – " (words::time_short(end)) }
-                                }
+                                p.event-time { (e.time_text().unwrap_or_default()) }
                             } @else {
                                 p.event-when { (pr.t("website.events.date_tba")) }
                                 p.event-time { (pr.t("website.events.rsvp_when_set")) }

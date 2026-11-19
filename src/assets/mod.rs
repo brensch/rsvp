@@ -362,12 +362,13 @@ pub fn household_data(cfg: &Config, items: &[Item], layout: Layout) -> Result<(V
         for slug in &h.events {
             let Some(e) = cfg.event(slug).filter(|e| e.on_invitation) else { continue };
             let Some(t) = e.start() else { continue };
-            let end = e.ends.as_deref().map(crate::config::parse_local).transpose()?;
+            // A malformed end time stops the render rather than being silently dropped.
+            e.ends.as_deref().map(crate::config::parse_local).transpose()?;
             events.push(json!({
                 "slug": e.slug, "name": e.name, "venue": e.venue, "address": e.address,
                 "dress": e.dress, "note": e.note,
                 "date": words::date_long(t.date()),
-                "time": match end { Some(end) => format!("{} – {}", words::time_short(t), words::time_short(end)), None => words::time_short(t) },
+                "time": e.time_text().unwrap_or_default(),
                 "time_words": words::time_words(t),
             }));
         }
