@@ -32,7 +32,7 @@ website:
   kicker_invited: "You're invited"
   salutation: "Dear {greeting},"
   save_the_date:
-    - "We're getting married, and we would love to have you there."
+    - "We're getting married, and we would love to have you there!"
     - "Please save the date. A formal invitation will follow."
   invited:
     - "We would be honoured to have you celebrate with us. All the details are below."
