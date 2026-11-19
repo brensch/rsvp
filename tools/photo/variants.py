@@ -101,6 +101,31 @@ def mono(lab, contrast=0.15):
 def warm_tone_bw(lab):
     out = mono(lab, 0.12); out[..., 1] = 1.5; out[..., 2] = 6.0; return out
 
+
+# Faces only: soft ovals around each face (crop coords), feathered wide so there is no edge.
+FACES = [(470, 430, 165, 225), (905, 370, 140, 200)]  # (cx, cy, rx, ry): Brendan, Alyssa
+
+def face_mask(lab):
+    yy, xx = np.mgrid[0:H, 0:W]
+    m = np.zeros((H, W))
+    for cx, cy, rx, ry in FACES:
+        d = np.hypot((xx - cx) / rx, (yy - cy) / ry)
+        m = np.maximum(m, 1 - smoothstep(0.75, 1.15, d))
+    return blur(m, 12) * skin(lab)
+
+def faces_less_red(rgb, excess=0.55, hue_deg=5.0, chroma=0.06):
+    """Calm redness on the faces only. Lightness is untouched.
+    1. Pixels redder than the surrounding skin (flushed cheeks, nose, blotches) lose part of that
+       excess a*, which evens the skin rather than tinting it.
+    2. A small hue rotation toward yellow and a touch less chroma for an overall natural warmth."""
+    lab = lab_of(rgb); w = face_mask(lab)
+    a, b = lab[..., 1], lab[..., 2]
+    sm = blur(w, 20); a_ref = blur(a * w, 20) / np.maximum(sm, 1e-4)   # local average redness of skin
+    a2 = a - w * excess * np.maximum(a - a_ref, 0)
+    C = np.hypot(a2, b); h = np.arctan2(b, a2) + np.radians(hue_deg) * w; C = C * (1 - chroma * w)
+    out = lab.copy(); out[..., 1] = C * np.cos(h); out[..., 2] = C * np.sin(h)
+    return rgb_of(out)
+
 def L(rgb): return lab_of(rgb)
 def R(lab): return rgb_of(lab)
 
@@ -110,6 +135,7 @@ def add(title, note, rgb): V.append((title, note, np.clip(rgb, 0, 1)))
 
 add("Unedited crop", "For reference: the photo before any colour work.", load(orig_path))
 add("Current", "What's on the site now: white balance, skin warmth softened, arm shadow evened.", BASE)
+add("Faces less red", "Only your faces: flushed cheeks and nose calmed to match the rest of your skin, plus a touch less red overall. Nothing else touched.", faces_less_red(load(orig_path)))
 add("Gentle contrast", "A soft S-curve: a little more depth without crushing the suit or the dress.", R(s_curve(L(BASE), 0.10)))
 add("Brighter and airier", "Up a third of a stop with lifted shadows. Lighter and more 'wedding'.", R(lift_shadows(L(exposure(BASE, 0.33)), 0.5)))
 add("Window recovered", "Brings back detail in the bright window and sky so the city reads better.", R(recover_highlights(L(BASE), 0.8)))
