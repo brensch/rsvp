@@ -697,7 +697,7 @@ fn missing_surname(g: &Guest) -> bool {
 }
 
 /// Households table columns that can be sorted, as (key, label, tooltip, extra class).
-const SORT_COLUMNS: [(&str, &str, &str, &str); 9] = [
+const SORT_COLUMNS: [(&str, &str, &str, &str); 10] = [
     ("name", "Household", "", ""),
     ("people", "#", "Number of people", "num"),
     ("emails", "Emails", "People with an email address / people who should have one (not children or unnamed plus ones)", "num"),
@@ -706,6 +706,7 @@ const SORT_COLUMNS: [(&str, &str, &str, &str); 9] = [
     ("likely", "Likely?", "Unlikely to come", ""),
     ("invited", "Invited to", "", ""),
     ("checked", "Checked", "Names and details checked", ""),
+    ("read", "Read", "Whether each email has been opened (the picture at the top of the email loaded)", ""),
     ("reply", "Reply · sent", "Reply status · S = save the date sent, I = invitation sent", ""),
 ];
 
@@ -775,6 +776,18 @@ fn australia_toggle(csrf: &str, h: &Household, back: &str) -> Markup {
             button.au type="submit" name="toggle_australia" value="1" aria-pressed=(if h.australia { "true" } else { "false" })
                 title="Lives in Australia: sees the Australia travel info" { "AU" }
         }
+    }
+}
+
+/// One line per email that has gone out: "✓ Save the date opened 18 Nov" or "… sent 18 Nov, not opened".
+fn mail_read(cfg: &Config, what: &str, sent_at: Option<&str>, stat: Option<&store::MailStat>) -> Markup {
+    let day = |ts: &str| when(cfg, ts).split(',').next().unwrap_or("").trim_end_matches(char::is_numeric).trim().to_string();
+    let Some(sent) = sent_at else { return html! {} };
+    match stat.and_then(|m| m.first_opened_at.as_deref()) {
+        Some(o) => {
+            html! { div.read-yes title={ (what) " sent " (when(cfg, sent)) ", first opened " (when(cfg, o)) } { "✓ " (what) " opened " (day(o)) } }
+        }
+        None => html! { div.read-no title={ (what) " sent " (when(cfg, sent)) } { (what) " sent " (day(sent)) ", not opened" } },
     }
 }
 
@@ -908,6 +921,13 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                 "likely" => !h.unlikely as i64,
                 "invited" => h.events.len() as i64,
                 "checked" => h.checked_at.is_some() as i64,
+                // Opened (2) > sent but not opened (1) > not sent (0), save the date then invitation.
+                "read" => {
+                    let state = |sent: bool, kind: &str| -> i64 {
+                        if snap.mail(h.id, kind).is_some_and(|m| m.opened > 0) { 2 } else { sent as i64 }
+                    };
+                    state(h.invite_sent_at.is_some(), "invitation") * 3 + state(h.std_sent_at.is_some(), "save_the_date")
+                }
                 "reply" => match status {
                     Status::NoReply => 0,
                     Status::Declined => 1,
@@ -1110,6 +1130,10 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                             td { (unlikely_toggle(&s.csrf, h, &back)) }
                             td.events-cell { (event_toggles(cfg, &s.csrf, h, &back)) }
                             td { (checked_toggle(cfg, &s.csrf, h, &back)) }
+                            td.read {
+                                (mail_read(cfg, "Save the date", h.std_sent_at.as_deref(), snap.mail(h.id, "save_the_date")))
+                                (mail_read(cfg, "Invitation", h.invite_sent_at.as_deref(), snap.mail(h.id, "invitation")))
+                            }
                             td.reply {
                                 (status_badge(*status))
                                 div.reply-meta {
