@@ -135,12 +135,7 @@ impl Renderer {
         let fonts: Vec<Font> = FONTS.iter().flat_map(|b| Font::iter(Bytes::new(b.to_vec()))).collect();
         let book = FontBook::from_fonts(&fonts);
         let dir = data_dir.join("templates");
-        Self {
-            library: LazyHash::new(Library::default()),
-            book: LazyHash::new(book),
-            fonts,
-            template_dir: dir.is_dir().then_some(dir),
-        }
+        Self { library: LazyHash::new(Library::default()), book: LazyHash::new(book), fonts, template_dir: dir.is_dir().then_some(dir) }
     }
 
     fn template_source(&self, name: &str) -> Result<String> {
@@ -150,11 +145,7 @@ impl Renderer {
                 return std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()));
             }
         }
-        TEMPLATES
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, s)| s.to_string())
-            .ok_or_else(|| anyhow!("no template {name}"))
+        TEMPLATES.iter().find(|(n, _)| *n == name).map(|(_, s)| s.to_string()).ok_or_else(|| anyhow!("no template {name}"))
     }
 
     /// Compile a template with the given data and extra virtual files.
@@ -437,7 +428,9 @@ pub fn report_data(
             })
             .filter(|v| e.meal && v["count"].as_u64() > Some(0))
             .collect();
-        totals.push(json!({"name": e.name, "invited": invited.len(), "yes": yes, "no": no, "pending": invited.len() - yes - no, "meals": meals}));
+        totals.push(
+            json!({"name": e.name, "invited": invited.len(), "yes": yes, "no": no, "pending": invited.len() - yes - no, "meals": meals}),
+        );
     }
     for g in guests {
         let Some(h) = by_h.get(&g.household_id) else { continue };
@@ -467,7 +460,14 @@ pub fn report_data(
 }
 
 /// Convenience used by web + CLI: render households for a kind.
-pub fn render_households(renderer: &Renderer, cfg: &Config, env: &Env, kind: Kind, layout: Layout, rows: &[(Household, Vec<Guest>, Vec<Response>)]) -> Result<PagedDocument> {
+pub fn render_households(
+    renderer: &Renderer,
+    cfg: &Config,
+    env: &Env,
+    kind: Kind,
+    layout: Layout,
+    rows: &[(Household, Vec<Guest>, Vec<Response>)],
+) -> Result<PagedDocument> {
     let items: Vec<Item> = rows
         .iter()
         .map(|(h, g, r)| Item { household: h, guests: g, responses: r, token: crate::store::household_token(&env.secret, h) })

@@ -12,9 +12,9 @@ use serde::Deserialize;
 
 use super::ui::{self, guest_page};
 use super::{AppResult, AppState, ClientIp, redirect};
-use crate::prose;
 use crate::assets::{self, Kind, Layout, words};
 use crate::config::{Config, parse_local};
+use crate::prose;
 use crate::rsvp::{self, field};
 use crate::store::{self, Guest, Household, Phase, Response as Resp};
 
@@ -174,13 +174,21 @@ async fn submit(
     }
     if pairs.len() > 500 {
         let p = &st.cfg.prose;
-        return Ok(ui::error_page(StatusCode::BAD_REQUEST, &p.t("website.errors.form_too_large_title"), &p.t("website.errors.form_too_large_text")));
+        return Ok(ui::error_page(
+            StatusCode::BAD_REQUEST,
+            &p.t("website.errors.form_too_large_title"),
+            &p.t("website.errors.form_too_large_text"),
+        ));
     }
     let values: HashMap<String, String> = pairs.into_iter().collect();
     let form = match rsvp::parse(&st.cfg, &ctx.h, &ctx.guests, &values) {
         Ok(f) => f,
         Err(errors) => {
-            return Ok((StatusCode::UNPROCESSABLE_ENTITY, render(&st, &token, &ctx, &values, &errors, false, &AddressView::Current { saved: false })).into_response());
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                render(&st, &token, &ctx, &values, &errors, false, &AddressView::Current { saved: false }),
+            )
+                .into_response());
         }
     };
     let ip_hash = crate::tokens::ip_hash(&st.env.secret, &ip);
@@ -733,7 +741,11 @@ async fn save_address(
                 None => (entered, "unverified"),
                 Some(c) if c.action == AddrAction::Accept && c.suggestion.same_as(&entered) => (c.suggestion, "verified"),
                 // Picked from search: Google already knows it; just take the tidy postal version.
-                Some(c) if values.get("picked").is_some_and(|v| v == "1") && matches!(c.action, AddrAction::Accept | AddrAction::Confirm) => (c.suggestion, "verified"),
+                Some(c)
+                    if values.get("picked").is_some_and(|v| v == "1") && matches!(c.action, AddrAction::Accept | AddrAction::Confirm) =>
+                {
+                    (c.suggestion, "verified")
+                }
                 Some(c) if c.action == AddrAction::Fix => {
                     let mut detail = vec![];
                     if !c.unconfirmed.is_empty() {
@@ -742,10 +754,16 @@ async fn save_address(
                     if !c.missing.is_empty() {
                         detail.push(st.cfg.prose.f("website.address.missing", &[("parts", &c.missing.join(", "))]));
                     }
-                    return show(AddressView::Confirm { entered, suggestion: None, action: c.action, detail: detail.join(" ") }, StatusCode::OK);
+                    return show(
+                        AddressView::Confirm { entered, suggestion: None, action: c.action, detail: detail.join(" ") },
+                        StatusCode::OK,
+                    );
                 }
                 Some(c) => {
-                    return show(AddressView::Confirm { entered, suggestion: Some(c.suggestion), action: c.action, detail: String::new() }, StatusCode::OK);
+                    return show(
+                        AddressView::Confirm { entered, suggestion: Some(c.suggestion), action: c.action, detail: String::new() },
+                        StatusCode::OK,
+                    );
                 }
             }
         }
@@ -761,7 +779,11 @@ async fn save_address(
         Ok(()) => Ok(redirect(&format!("/i/{token}?address=1#address"))),
         Err(e) => {
             tracing::error!(error = ?e, household = ctx.h.id, "ADDRESS SAVE FAILED");
-            Ok(ui::error_page(StatusCode::SERVICE_UNAVAILABLE, &st.cfg.prose.t("website.errors.address_failed_title"), &st.cfg.prose.t("website.errors.address_failed_text")))
+            Ok(ui::error_page(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &st.cfg.prose.t("website.errors.address_failed_title"),
+                &st.cfg.prose.t("website.errors.address_failed_text"),
+            ))
         }
     }
 }

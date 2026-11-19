@@ -24,7 +24,11 @@ pub async fn run(db: &Db, cfg: &Config, env: &Env) -> Result<()> {
     db.call(move |c| {
         store::set_setting(c, "system", "last_backup_status", &status)?;
         if failed {
-            store::enqueue(c, "discord", &json!({"type": "backup", "text": format!("🚨 Daily backup failed: {status}\n{base}/admin/settings")}))?;
+            store::enqueue(
+                c,
+                "discord",
+                &json!({"type": "backup", "text": format!("🚨 Daily backup failed: {status}\n{base}/admin/settings")}),
+            )?;
         } else {
             store::set_setting(c, "system", "last_backup_at", &crate::db::now())?;
         }
@@ -159,13 +163,14 @@ pub async fn scheduler(db: Db, cfg: std::sync::Arc<Config>, env: std::sync::Arc<
         let now = time::OffsetDateTime::now_utc();
         let today = now.date().to_string();
         let last = db.call(|c| store::setting(c, "last_backup_at")).await.ok().flatten().unwrap_or_default();
-        if now.hour() >= cfg.backup.hour_utc && !last.starts_with(&today) {
-            if let Err(e) = run(&db, &cfg, &env).await {
-                tracing::error!(error = ?e, "scheduled backup failed");
-                // Avoid hammering: wait an hour before retrying a failed day.
-                tokio::time::sleep(Duration::from_secs(3600)).await;
-                continue;
-            }
+        if now.hour() >= cfg.backup.hour_utc
+            && !last.starts_with(&today)
+            && let Err(e) = run(&db, &cfg, &env).await
+        {
+            tracing::error!(error = ?e, "scheduled backup failed");
+            // Avoid hammering: wait an hour before retrying a failed day.
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            continue;
         }
         tokio::time::sleep(Duration::from_secs(600)).await;
     }

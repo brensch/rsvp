@@ -48,7 +48,8 @@ pub async fn static_file(Path(file): Path<String>) -> Response {
         return ([(header::CONTENT_TYPE, *ct), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], *body).into_response();
     }
     if let Some((_, bytes)) = ICONS.iter().find(|(n, _)| *n == file) {
-        return ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], *bytes).into_response();
+        return ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], *bytes)
+            .into_response();
     }
     not_found()
 }
@@ -252,7 +253,9 @@ pub fn not_found() -> Response {
 pub fn when(cfg: &Config, ts: &str) -> String {
     let Ok(t) = time::OffsetDateTime::parse(ts, &time::format_description::well_known::Rfc3339) else { return ts.to_string() };
     let t = cfg.offset().map(|o| t.to_offset(o)).unwrap_or(t);
-    let f = time::macros::format_description!("[day padding:none] [month repr:short] [year], [hour repr:12 padding:none]:[minute] [period case:lower]");
+    let f = time::macros::format_description!(
+        "[day padding:none] [month repr:short] [year], [hour repr:12 padding:none]:[minute] [period case:lower]"
+    );
     t.format(&f).unwrap_or_else(|_| ts.to_string())
 }
 

@@ -95,10 +95,8 @@ fn flash_text(code: Option<&str>) -> Option<&'static str> {
 }
 
 async fn page(st: &AppState, s: &Session, active: &str, title: &str, flash: &Flash, body: Markup) -> AppResult {
-    let pending_users = st
-        .db
-        .call(|c| Ok(c.query_row("SELECT COUNT(*) FROM users WHERE role = 'pending'", [], |r| r.get::<_, i64>(0))?))
-        .await?;
+    let pending_users =
+        st.db.call(|c| Ok(c.query_row("SELECT COUNT(*) FROM users WHERE role = 'pending'", [], |r| r.get::<_, i64>(0))?)).await?;
     let nav = Nav { user: s.user.clone(), csrf: s.csrf.clone(), pending_users };
     Ok(ui::admin_page(&st.cfg, &nav, active, title, flash_text(flash.m.as_deref()), body))
 }
@@ -122,6 +120,8 @@ impl F {
     fn all(&self, k: &str) -> Vec<String> {
         self.1.iter().filter(|(key, _)| key == k).map(|(_, v)| v.clone()).collect()
     }
+    // Err is a ready-made error page that handlers return directly (the guard! pattern).
+    #[allow(clippy::result_large_err)]
     fn csrf(&self, s: &Session) -> Result<(), Response> {
         s.check_csrf(self.0.get("_csrf").map(String::as_str))
     }
@@ -422,7 +422,7 @@ async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Que
     let people = snap.guests.iter().filter(|g| g.plus_one_of.is_none()).count();
     let no_email = snap.households.iter().filter(|h| h.email.is_empty() && snap.guests_of(h.id).iter().all(|g| g.email.is_empty())).count();
     let no_addr = snap.households.iter().filter(|h| h.address_lines().is_empty()).count();
-    let pct = if total > 0 { replied * 100 / total } else { 0 };
+    let pct = (replied * 100).checked_div(total).unwrap_or(0);
     let names: HashMap<i64, &str> = snap.households.iter().map(|h| (h.id, h.name.as_str())).collect();
     let by_h: HashMap<i64, &Household> = snap.households.iter().map(|h| (h.id, h)).collect();
 
@@ -452,7 +452,9 @@ async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Que
             households: hs.len(),
             people: 0,
             likely: 0,
-            likely_href: tier.map(|t| format!("/admin/households?tier={t}&filter=likely")).unwrap_or_else(|| "/admin/households?filter=likely".into()),
+            likely_href: tier
+                .map(|t| format!("/admin/households?tier={t}&filter=likely"))
+                .unwrap_or_else(|| "/admin/households?filter=likely".into()),
             address: hs.iter().filter(|h| !h.address_lines().is_empty()).count(),
             checked: hs.iter().filter(|h| h.checked_at.is_some()).count(),
             opened: hs.iter().filter(|h| h.first_viewed_at.is_some()).count(),
@@ -485,7 +487,7 @@ async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Que
     };
     let tier_rows: Vec<TierRow> = vec![tier_row(Some(1)), tier_row(Some(2)), tier_row(Some(3)), tier_row(None)];
     let progress = |n: usize, of: usize| -> Markup {
-        let pct = if of > 0 { n * 100 / of } else { 0 };
+        let pct = (n * 100).checked_div(of).unwrap_or(0);
         html! {
             div.prog {
                 span.prog-nums { strong { (n) } span.muted { " / " (of) } }
@@ -525,7 +527,7 @@ async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Que
             div.tile {
                 @let added = snap.households.iter().filter(|h| snap.calendar.contains_key(&h.id)).count();
                 span.tile-label { "Added to calendar" } span.tile-value { (added) small { " / " (total) } }
-                div.meter { span class=(pct_class(if total > 0 { added * 100 / total } else { 0 })) {} }
+                div.meter { span class=(pct_class((added * 100).checked_div(total).unwrap_or(0))) {} }
                 span.tile-sub { a href="/admin/households?filter=calendar" { "See who" } " · households that downloaded their calendar file" }
             }
         }
@@ -815,9 +817,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
             let added_ok = q.added.as_deref().is_none_or(|a| a.is_empty() || h.added_by == a);
             let (have_email, want_email) = email_counts(gs);
             let filter_ok = match q.filter.as_deref() {
-                Some("incomplete") => {
-                    have_email < want_email || h.address_lines().is_empty() || gs.iter().any(missing_surname)
-                }
+                Some("incomplete") => have_email < want_email || h.address_lines().is_empty() || gs.iter().any(missing_surname),
                 Some("some_email") => have_email < want_email,
                 Some("no_surname") => gs.iter().any(missing_surname),
                 Some("unnamed_plus_one") => gs.iter().any(|g| g.unnamed_plus_one()),
@@ -851,7 +851,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                 "people" => gs.len() as i64,
                 "emails" => {
                     let (have, want) = email_counts(gs);
-                    if want == 0 { 1_000_000 } else { (have * 1000 / want) as i64 * 100 + want as i64 }
+                    (have * 1000).checked_div(want).map_or(1_000_000, |r| r as i64 * 100 + want as i64)
                 }
                 "tier" => h.tier,
                 "au" => h.australia as i64,
@@ -878,7 +878,8 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
     let sel = |a: &Option<String>, v: &str| a.as_deref() == Some(v);
     let list_href = |extra: &[(&str, &str)]| {
         let mut parts = vec![];
-        for (k, v) in [("q", &q.q), ("tier", &q.tier), ("status", &q.status), ("side", &q.side), ("filter", &q.filter), ("added", &q.added)] {
+        for (k, v) in [("q", &q.q), ("tier", &q.tier), ("status", &q.status), ("side", &q.side), ("filter", &q.filter), ("added", &q.added)]
+        {
             if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
                 parts.push(format!("{k}={}", urlencoding::encode(v)));
             }
@@ -1116,8 +1117,14 @@ async fn quick_update(
         events.sort_by_key(|e| st.cfg.events.iter().position(|x| &x.slug == e));
         input.events = Some(events);
     }
-    if input.tier.is_none() && input.events.is_none() && input.australia.is_none() && input.unlikely.is_none() || input.validate(&event_slugs(&st.cfg)).is_err() {
-        return Ok(if inline { (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({"error": "invalid change"}))).into_response() } else { redirect(&format!("{back}#h{id}")) });
+    if input.tier.is_none() && input.events.is_none() && input.australia.is_none() && input.unlikely.is_none()
+        || input.validate(&event_slugs(&st.cfg)).is_err()
+    {
+        return Ok(if inline {
+            (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({"error": "invalid change"}))).into_response()
+        } else {
+            redirect(&format!("{back}#h{id}"))
+        });
     }
     let (code, _) = apply_change(&st, &s, "household.update", Some(id), serde_json::to_value(&input)?).await?;
     if inline {
@@ -1474,7 +1481,12 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
 }
 
 /// Save the whole household page at once: details, every person, removals and new people.
-async fn update_household(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+async fn update_household(
+    State(st): State<AppState>,
+    Member(s): Member,
+    Path(id): Path<i64>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
     let bad = |msg: String| Ok(ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Check the form", &msg));
@@ -1489,7 +1501,9 @@ async fn update_household(State(st): State<AppState>, Member(s): Member, Path(id
     // Rows arrive in the order they were dragged into; that's the new sort order.
     let mut pos = 0i64;
     for gid in f.all("guest_ids").iter().filter_map(|g| g.parse::<i64>().ok()) {
-        let Some(g) = current.iter().find(|g| g.id == gid) else { return bad("That person isn't in this household any more; reload the page.".into()) };
+        let Some(g) = current.iter().find(|g| g.id == gid) else {
+            return bad("That person isn't in this household any more; reload the page.".into());
+        };
         let p = format!("g{gid}.");
         if f.check(&format!("{p}remove")) {
             removals.push(gid);
@@ -1550,7 +1564,12 @@ async fn update_household(State(st): State<AppState>, Member(s): Member, Path(id
     Ok(redirect(&format!("/admin/households/{id}?m=saved")))
 }
 
-async fn archive_household(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+async fn archive_household(
+    State(st): State<AppState>,
+    Member(s): Member,
+    Path(id): Path<i64>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
     guard!(s.require_owner());
@@ -1560,7 +1579,12 @@ async fn archive_household(State(st): State<AppState>, Member(s): Member, Path(i
     Ok(redirect(&format!("/admin/households/{id}?m={}", if restore { "restored" } else { "archived" })))
 }
 
-async fn rotate_link(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+async fn rotate_link(
+    State(st): State<AppState>,
+    Member(s): Member,
+    Path(id): Path<i64>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
     guard!(s.require_owner());
@@ -1717,7 +1741,8 @@ async fn export_csv(State(st): State<AppState>, Member(s): Member) -> AppResult 
     }
     let actor = s.user.actor();
     st.db.call(move |c| store::audit(c, &actor, "export.csv", "", "", &json!({}))).await?;
-    Ok(([(header::CONTENT_TYPE, "text/csv; charset=utf-8"), (header::CONTENT_DISPOSITION, "attachment; filename=\"guests.csv\"")], out).into_response())
+    Ok(([(header::CONTENT_TYPE, "text/csv; charset=utf-8"), (header::CONTENT_DISPOSITION, "attachment; filename=\"guests.csv\"")], out)
+        .into_response())
 }
 
 fn safe_back(back: &str, fallback: &str) -> String {
@@ -1730,7 +1755,8 @@ fn safe_back(back: &str, fallback: &str) -> String {
 async fn stationery(State(st): State<AppState>, Member(s): Member) -> AppResult {
     let snap = Snapshot::load(&st).await?;
     let first = snap.households.first().map(|h| h.id);
-    let tags: std::collections::BTreeSet<String> = snap.households.iter().flat_map(|h| h.tag_list().into_iter().map(String::from)).collect();
+    let tags: std::collections::BTreeSet<String> =
+        snap.households.iter().flat_map(|h| h.tag_list().into_iter().map(String::from)).collect();
     let body = html! {
         p.muted { "Everything here is generated from your guest list and the templates. Print-shop PDFs include 3 mm bleed and trim boxes; home-print sheets put two cards on " (st.cfg.print.paper) " with crop marks." }
         div.stationery-grid {
@@ -1778,7 +1804,12 @@ struct StationeryQuery {
     layout: Option<String>,
 }
 
-async fn stationery_file(State(st): State<AppState>, Member(s): Member, Path(file): Path<String>, Query(q): Query<StationeryQuery>) -> AppResult {
+async fn stationery_file(
+    State(st): State<AppState>,
+    Member(s): Member,
+    Path(file): Path<String>,
+    Query(q): Query<StationeryQuery>,
+) -> AppResult {
     let Some((slug, ext)) = file.rsplit_once('.') else { return Ok(ui::not_found()) };
     let Some(kind) = Kind::parse(slug).filter(|k| *k != Kind::SaveTheDate) else { return Ok(ui::not_found()) };
     let ext: &'static str = match ext {
@@ -1795,7 +1826,8 @@ async fn stationery_file(State(st): State<AppState>, Member(s): Member, Path(fil
         .db
         .call(move |c| {
             let doc = if kind == Kind::Report {
-                let data = assets::report_data(&cfg, &store::list_households(c, false)?, &store::all_guests(c)?, &store::all_responses(c)?)?;
+                let data =
+                    assets::report_data(&cfg, &store::list_households(c, false)?, &store::all_guests(c)?, &store::all_responses(c)?)?;
                 r.compile(kind, &data, HashMap::new())?
             } else {
                 let mut rows = vec![];
@@ -1825,13 +1857,19 @@ async fn stationery_file(State(st): State<AppState>, Member(s): Member, Path(fil
         .await?;
     let ct = if ext == "pdf" { "application/pdf" } else { "image/png" };
     let name = format!("{}.{}", kind.slug(), ext);
-    Ok(([(header::CONTENT_TYPE, ct.to_string()), (header::CONTENT_DISPOSITION, format!("inline; filename=\"{name}\""))], bytes).into_response())
+    Ok(([(header::CONTENT_TYPE, ct.to_string()), (header::CONTENT_DISPOSITION, format!("inline; filename=\"{name}\""))], bytes)
+        .into_response())
 }
 
 // ---------------------------------------------------------------------------
 // Sending (owners)
 
-async fn send_one(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+async fn send_one(
+    State(st): State<AppState>,
+    Member(s): Member,
+    Path(id): Path<i64>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
     guard!(s.require_owner());
@@ -2194,7 +2232,12 @@ async fn gmail_return(axum::extract::RawQuery(q): axum::extract::RawQuery) -> ax
     page.into_response()
 }
 
-async fn gmail_callback(State(st): State<AppState>, Member(s): Member, headers: axum::http::HeaderMap, Query(q): Query<GmailCallback>) -> AppResult {
+async fn gmail_callback(
+    State(st): State<AppState>,
+    Member(s): Member,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<GmailCallback>,
+) -> AppResult {
     guard!(s.require_owner());
     let fail = |msg: String| Ok(ui::error_page(axum::http::StatusCode::BAD_REQUEST, "Couldn't connect Gmail", &msg));
     if let Some(e) = q.error {
@@ -2387,7 +2430,12 @@ async fn account(State(st): State<AppState>, Member(s): Member, Query(fl): Query
     page(&st, &s, "account", "Account", &fl, body).await
 }
 
-async fn signout_all(State(st): State<AppState>, Member(s): Member, headers: axum::http::HeaderMap, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+async fn signout_all(
+    State(st): State<AppState>,
+    Member(s): Member,
+    headers: axum::http::HeaderMap,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
     let current = headers
@@ -2517,7 +2565,10 @@ async fn create_page(State(st): State<AppState>, Member(s): Member, Form(pairs):
 }
 
 async fn edit_page(State(st): State<AppState>, Member(s): Member, Path(slug): Path<String>, Query(fl): Query<Flash>) -> AppResult {
-    let p = { let slug = slug.clone(); st.db.call(move |c| crate::site::get_page(c, &slug)).await? };
+    let p = {
+        let slug = slug.clone();
+        st.db.call(move |c| crate::site::get_page(c, &slug)).await?
+    };
     let Some(p) = p else { return Ok(ui::not_found()) };
     let body = html! {
         form.card.page-editor method="post" action={ "/admin/website/" (p.slug) } {
@@ -2559,7 +2610,12 @@ async fn edit_page(State(st): State<AppState>, Member(s): Member, Path(slug): Pa
     page(&st, &s, "website", &p.title, &fl, body).await
 }
 
-async fn save_page(State(st): State<AppState>, Member(s): Member, Path(slug): Path<String>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+async fn save_page(
+    State(st): State<AppState>,
+    Member(s): Member,
+    Path(slug): Path<String>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
     let input = crate::site::PageInput {
@@ -2585,7 +2641,12 @@ async fn save_page(State(st): State<AppState>, Member(s): Member, Path(slug): Pa
     })
 }
 
-async fn delete_page(State(st): State<AppState>, Member(s): Member, Path(slug): Path<String>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+async fn delete_page(
+    State(st): State<AppState>,
+    Member(s): Member,
+    Path(slug): Path<String>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
     let actor = s.user.actor();
@@ -2656,7 +2717,11 @@ async fn gallery_upload(State(st): State<AppState>, Member(s): Member, mut mp: a
             }
             Some("photos") => {
                 if !csrf_ok {
-                    return Ok(ui::error_page(axum::http::StatusCode::FORBIDDEN, "Session expired", "Please reload the page and try again."));
+                    return Ok(ui::error_page(
+                        axum::http::StatusCode::FORBIDDEN,
+                        "Session expired",
+                        "Please reload the page and try again.",
+                    ));
                 }
                 let name = field.file_name().unwrap_or("photo").to_string();
                 let bytes = match field.bytes().await {
@@ -2696,7 +2761,12 @@ async fn gallery_upload(State(st): State<AppState>, Member(s): Member, mut mp: a
     Ok(redirect("/admin/gallery?m=uploaded"))
 }
 
-async fn gallery_photo(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+async fn gallery_photo(
+    State(st): State<AppState>,
+    Member(s): Member,
+    Path(id): Path<i64>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
     let (action, caption, actor) = (f.s("action"), f.0.get("caption").cloned().unwrap_or_default(), s.user.actor());
@@ -2717,7 +2787,12 @@ async fn gallery_photo(State(st): State<AppState>, Member(s): Member, Path(id): 
     Ok(redirect("/admin/gallery?m=saved"))
 }
 
-async fn review_request(State(st): State<AppState>, Member(s): Member, Path(id): Path<i64>, Form(pairs): Form<Vec<(String, String)>>) -> AppResult {
+async fn review_request(
+    State(st): State<AppState>,
+    Member(s): Member,
+    Path(id): Path<i64>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> AppResult {
     let f = F::new(pairs);
     guard!(f.csrf(&s));
     guard!(s.require_owner());

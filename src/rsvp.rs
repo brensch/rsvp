@@ -6,6 +6,7 @@
 //!   3. one SQLite transaction (synchronous=FULL): submission row, current
 //!      responses, household extras, audit, outbox notification
 //!   4. only then show the guest "thank you"
+//!
 //! If step 3 fails the guest sees an error, but the journal still has it and
 //! `rsvp journal verify` / `replay` will surface and restore it.
 
@@ -54,17 +55,13 @@ pub struct EventAnswer {
     pub meal: String,
 }
 
-pub const ACCOMMODATION_OPTIONS: &[(&str, &str)] = &[
-    ("", "Choose one"),
-    ("sorted", "We've sorted our own"),
-    ("need-help", "We'd love recommendations"),
-    ("local", "We live locally"),
-];
+pub const ACCOMMODATION_OPTIONS: &[(&str, &str)] =
+    &[("", "Choose one"), ("sorted", "We've sorted our own"), ("need-help", "We'd love recommendations"), ("local", "We live locally")];
 
 pub const TRANSPORT_OPTIONS: &[(&str, &str)] = &[("", "Choose one"), ("yes", "Yes please"), ("no", "No thanks")];
 
 /// Meals offered to a guest.
-pub fn meals_for<'a>(cfg: &'a Config, is_child: bool) -> Vec<&'a Meal> {
+pub fn meals_for(cfg: &Config, is_child: bool) -> Vec<&Meal> {
     let kids: Vec<&Meal> = cfg.meals.iter().filter(|m| m.kids).collect();
     let adults: Vec<&Meal> = cfg.meals.iter().filter(|m| !m.kids).collect();
     if is_child && !kids.is_empty() { kids.into_iter().chain(adults).collect() } else { adults }
@@ -278,7 +275,14 @@ pub fn apply_entry(conn: &Connection, cfg: Option<&Config>, entry: &Entry, notif
         )?;
     }
 
-    store::audit(&tx, &format!("guest:{}", h.id), "rsvp.submit", "household", &h.id.to_string(), &json!({"submission": entry.id, "applied": is_latest}))?;
+    store::audit(
+        &tx,
+        &format!("guest:{}", h.id),
+        "rsvp.submit",
+        "household",
+        &h.id.to_string(),
+        &json!({"submission": entry.id, "applied": is_latest}),
+    )?;
     if notify {
         let first = h.rsvp_at.is_none();
         store::enqueue(&tx, "discord", &json!({"type": "rsvp", "text": summary(cfg, &h, &form, first)}))?;
@@ -437,15 +441,34 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let journal = Journal::new(dir.join("journal.jsonl"));
         db.with(|c| {
-            let input = HouseholdInput { guests: vec![GuestInput { first_name: Some("Ann".into()), ..Default::default() }], events: Some(vec!["ceremony".into()]), ..Default::default() };
+            let input = HouseholdInput {
+                guests: vec![GuestInput { first_name: Some("Ann".into()), ..Default::default() }],
+                events: Some(vec!["ceremony".into()]),
+                ..Default::default()
+            };
             let hid = store::create_household(c, "t", &[3; 32], &input, &[])?;
             let g = store::guests_for(c, hid)?[0].id;
             // Simulate a crash after the journal write but before the DB commit.
             let form = RsvpForm {
-                guests: vec![GuestAnswer { guest_id: g, name: "Ann".into(), events: [("ceremony".to_string(), EventAnswer { attending: true, meal: String::new() })].into(), dietary: String::new(), first_name: String::new(), last_name: String::new() }],
+                guests: vec![GuestAnswer {
+                    guest_id: g,
+                    name: "Ann".into(),
+                    events: [("ceremony".to_string(), EventAnswer { attending: true, meal: String::new() })].into(),
+                    dietary: String::new(),
+                    first_name: String::new(),
+                    last_name: String::new(),
+                }],
                 ..Default::default()
             };
-            journal.append(&Entry { id: "lost-1".into(), kind: String::new(), household_id: hid, received_at: crate::db::now(), ip_hash: String::new(), user_agent: String::new(), payload: serde_json::to_value(&form)? })?;
+            journal.append(&Entry {
+                id: "lost-1".into(),
+                kind: String::new(),
+                household_id: hid,
+                received_at: crate::db::now(),
+                ip_hash: String::new(),
+                user_agent: String::new(),
+                payload: serde_json::to_value(&form)?,
+            })?;
             assert_eq!(journal_missing(c, &journal)?.len(), 1);
             for e in journal_missing(c, &journal)? {
                 apply(c, &cfg, &e, false)?;
@@ -471,10 +494,18 @@ mod address_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let journal = Journal::new(dir.join("journal.jsonl"));
         db.with(|c| {
-            let input = HouseholdInput { guests: vec![GuestInput { first_name: Some("Ann".into()), ..Default::default() }], ..Default::default() };
+            let input =
+                HouseholdInput { guests: vec![GuestInput { first_name: Some("Ann".into()), ..Default::default() }], ..Default::default() };
             let hid = store::create_household(c, "t", &[3; 32], &input, &["ceremony".into()])?;
             let h = store::must_household(c, hid)?;
-            let a = Address { addr1: "1 Test St".into(), city: "Springfield".into(), region: "IL".into(), postcode: "62701".into(), country: "United States".into(), ..Default::default() };
+            let a = Address {
+                addr1: "1 Test St".into(),
+                city: "Springfield".into(),
+                region: "IL".into(),
+                postcode: "62701".into(),
+                country: "United States".into(),
+                ..Default::default()
+            };
             let sub = Submission { address: a, status: "verified".into() };
             crate::address::submit(c, &journal, &h, &sub, "ip", "ua")?;
             let h = store::must_household(c, hid)?;

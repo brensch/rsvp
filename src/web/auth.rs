@@ -87,11 +87,9 @@ pub(super) async fn session_from(st: &AppState, headers: &HeaderMap) -> anyhow::
     st.db
         .call(move |c| {
             let row: Option<(String, String, String, String)> = c
-                .query_row(
-                    "SELECT user_id, csrf, expires_at, last_seen_at FROM sessions WHERE id_hash = ?1",
-                    [&hash],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
+                .query_row("SELECT user_id, csrf, expires_at, last_seen_at FROM sessions WHERE id_hash = ?1", [&hash], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })
                 .optional()?;
             let Some((uid, csrf, exp, seen)) = row else { return Ok(None) };
             let ts = now();
@@ -141,12 +139,14 @@ impl FromRequestParts<AppState> for Member {
 }
 
 impl Session {
+    #[allow(clippy::result_large_err)] // Err is the error page itself (see F::csrf)
     pub fn check_csrf(&self, provided: Option<&str>) -> Result<(), Response> {
         match provided {
             Some(t) if tokens::constant_time_eq(t, &self.csrf) => Ok(()),
             _ => Err(ui::error_page(StatusCode::FORBIDDEN, "Session expired", "Please reload the page and try again.")),
         }
     }
+    #[allow(clippy::result_large_err)]
     pub fn require_owner(&self) -> Result<(), Response> {
         if self.user.is_owner() {
             Ok(())
@@ -458,11 +458,10 @@ async fn register_finish(
                     "INSERT INTO credentials (cred_id, user_id, passkey, created_at) VALUES (?1, ?2, ?3, ?4)",
                     params![key, uid, pk, ts],
                 )?;
-                if let Some(code) = &invite {
-                    if role.is_some() {
+                if let Some(code) = &invite
+                    && role.is_some() {
                         store::consume_invite(&tx, code, &uid)?;
                     }
-                }
                 store::audit(&tx, &format!("user:{name}"), "user.register", "user", &uid, &json!({"role": role_str}))?;
                 store::enqueue(&tx, "discord", &json!({"type": "signup", "name": name, "role": role_str}))?;
                 tx.commit()?;
@@ -502,10 +501,8 @@ async fn add_passkey_start(State(st): State<AppState>, AnyUser(s): AnyUser, head
         })
         .await?;
     let uuid = Uuid::parse_str(&s.user.id)?;
-    let (ccr, reg) = st
-        .webauthn
-        .start_passkey_registration(uuid, &s.user.name, &s.user.name, Some(existing))
-        .map_err(|e| anyhow!("{e:?}"))?;
+    let (ccr, reg) =
+        st.webauthn.start_passkey_registration(uuid, &s.user.name, &s.user.name, Some(existing)).map_err(|e| anyhow!("{e:?}"))?;
     Ok(json_with_cookie(serde_json::to_value(ccr)?, put_ceremony(&st, Ceremony::AddPasskey { reg, user_id: s.user.id.clone() })))
 }
 

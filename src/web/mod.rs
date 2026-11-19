@@ -93,12 +93,11 @@ async fn healthz(State(st): State<AppState>) -> impl IntoResponse {
 /// Client IP. We only trust X-Forwarded-For when the TCP peer is loopback (Caddy).
 pub fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
     let peer_ip = peer.map(|p| p.ip());
-    if peer_ip.is_none_or(|ip| ip.is_loopback()) {
-        if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            if let Some(last) = xff.split(',').map(str::trim).filter(|s| s.parse::<IpAddr>().is_ok()).next_back() {
-                return last.to_string();
-            }
-        }
+    if peer_ip.is_none_or(|ip| ip.is_loopback())
+        && let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        && let Some(last) = xff.split(',').map(str::trim).rfind(|s| s.parse::<IpAddr>().is_ok())
+    {
+        return last.to_string();
     }
     peer_ip.map(|i| i.to_string()).unwrap_or_else(|| "unknown".into())
 }
@@ -121,14 +120,20 @@ async fn guard(State(st): State<AppState>, req: Request, next: Next) -> Response
     } else {
         None
     };
-    if let Some((name, burst, per_sec)) = bucket {
-        if !st.limiter.check(&format!("{name}:{ip}"), burst, per_sec) {
-            tracing::warn!(%ip, %path, "rate limited");
-            return with_headers(ui::error_page(StatusCode::TOO_MANY_REQUESTS, "Slow down", "Too many requests. Please wait a minute and try again."), &path);
-        }
+    if let Some((name, burst, per_sec)) = bucket
+        && !st.limiter.check(&format!("{name}:{ip}"), burst, per_sec)
+    {
+        tracing::warn!(%ip, %path, "rate limited");
+        return with_headers(
+            ui::error_page(StatusCode::TOO_MANY_REQUESTS, "Slow down", "Too many requests. Please wait a minute and try again."),
+            &path,
+        );
     }
     if path.starts_with("/i/") && !st.limiter.has_tokens(&format!("badtoken:{ip}")) {
-        return with_headers(ui::error_page(StatusCode::TOO_MANY_REQUESTS, "Slow down", "Too many attempts. Please try again later."), &path);
+        return with_headers(
+            ui::error_page(StatusCode::TOO_MANY_REQUESTS, "Slow down", "Too many attempts. Please try again later."),
+            &path,
+        );
     }
 
     // Writes must come from our own pages.
@@ -217,15 +222,17 @@ fn with_headers(mut resp: Response, path: &str) -> Response {
     set(h, "x-robots-tag", "noindex, nofollow, noarchive");
     if path.starts_with("/admin") {
         set(h, header::CACHE_CONTROL.as_str(), "no-store");
-    } else if !(path.starts_with("/static/") || path.starts_with("/fonts/") || path.starts_with("/media/") || h.contains_key(header::CACHE_CONTROL)) {
+    } else if !(path.starts_with("/static/")
+        || path.starts_with("/fonts/")
+        || path.starts_with("/media/")
+        || h.contains_key(header::CACHE_CONTROL))
+    {
         // Guest pages: always check with the server, but the browser may keep the page in memory
         // so Back and Forward are instant (`no-store` would rule that out).
         set(h, header::CACHE_CONTROL.as_str(), "private, no-cache");
         let html = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|v| v.starts_with("text/html"));
-        if html {
-            if let Ok(v) = HeaderValue::from_str(&format!("\"{}\"", ui::asset("speculation.json"))) {
-                h.insert("speculation-rules", v);
-            }
+        if html && let Ok(v) = HeaderValue::from_str(&format!("\"{}\"", ui::asset("speculation.json"))) {
+            h.insert("speculation-rules", v);
         }
     }
     resp
@@ -262,9 +269,8 @@ impl RateLimiter {
     /// True if the bucket has at least one token, without taking it.
     pub fn has_tokens(&self, key: &str) -> bool {
         let b = self.buckets.lock().unwrap_or_else(|p| p.into_inner());
-        b.get(key).is_none_or(|(tokens, last, rate, cap)| {
-            (*tokens + Instant::now().duration_since(*last).as_secs_f64() * *rate).min(*cap) >= 1.0
-        })
+        b.get(key)
+            .is_none_or(|(tokens, last, rate, cap)| (*tokens + Instant::now().duration_since(*last).as_secs_f64() * *rate).min(*cap) >= 1.0)
     }
 }
 
@@ -322,11 +328,22 @@ fn report_server_error(st: &AppState, path: &str, status: StatusCode, err: Optio
     let base = st.cfg.site.base_url.clone();
     let db = st.db.clone();
     tokio::spawn(async move {
-        let text = format!("🚨 Server error {} on {shown}{}\n{message}\n{base}/admin/audit", status.as_u16(), if id.is_empty() { String::new() } else { format!(" (ref {id})") });
+        let text = format!(
+            "🚨 Server error {} on {shown}{}\n{message}\n{base}/admin/audit",
+            status.as_u16(),
+            if id.is_empty() { String::new() } else { format!(" (ref {id})") }
+        );
         let res = db
             .call(move |c| {
                 let tx = crate::db::begin(c)?;
-                store::audit(&tx, "system", "server.error", "request", &shown, &serde_json::json!({"status": status.as_u16(), "ref": id, "error": message}))?;
+                store::audit(
+                    &tx,
+                    "system",
+                    "server.error",
+                    "request",
+                    &shown,
+                    &serde_json::json!({"status": status.as_u16(), "ref": id, "error": message}),
+                )?;
                 store::enqueue(&tx, "discord", &serde_json::json!({"type": "alert", "text": text}))?;
                 tx.commit()
             })

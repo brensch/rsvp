@@ -195,15 +195,15 @@ impl HouseholdInput {
     }
 
     pub fn validate(&self, valid_events: &[String]) -> Result<()> {
-        if let Some(side) = &self.side {
-            if !matches!(side.as_str(), "a" | "b" | "both") {
-                bail!("side must be one of a, b, both");
-            }
+        if let Some(side) = &self.side
+            && !matches!(side.as_str(), "a" | "b" | "both")
+        {
+            bail!("side must be one of a, b, both");
         }
-        if let Some(t) = self.tier {
-            if !(1..=3).contains(&t) {
-                bail!("tier must be 1, 2 or 3");
-            }
+        if let Some(t) = self.tier
+            && !(1..=3).contains(&t)
+        {
+            bail!("tier must be 1, 2 or 3");
         }
         if let Some(evs) = &self.events {
             for e in evs {
@@ -212,16 +212,17 @@ impl HouseholdInput {
                 }
             }
         }
-        if let Some(email) = &self.email {
-            if !email.is_empty() && !plausible_email(email) {
-                bail!("'{email}' does not look like an email address");
-            }
+        if let Some(email) = &self.email
+            && !email.is_empty()
+            && !plausible_email(email)
+        {
+            bail!("'{email}' does not look like an email address");
         }
         for (k, v) in self.fields() {
-            if let Some(v) = v {
-                if v.len() > 2000 {
-                    bail!("{k} is too long");
-                }
+            if let Some(v) = v
+                && v.len() > 2000
+            {
+                bail!("{k} is too long");
             }
         }
         for g in &self.guests {
@@ -250,9 +251,7 @@ pub fn list_households(conn: &Connection, include_archived: bool) -> Result<Vec<
 }
 
 pub fn get_household(conn: &Connection, id: i64) -> Result<Option<Household>> {
-    Ok(conn
-        .query_row("SELECT * FROM households WHERE id = ?1", [id], Household::from_row)
-        .optional()?)
+    Ok(conn.query_row("SELECT * FROM households WHERE id = ?1", [id], Household::from_row).optional()?)
 }
 
 pub fn must_household(conn: &Connection, id: i64) -> Result<Household> {
@@ -269,13 +268,7 @@ pub fn household_by_token(conn: &Connection, token: &str) -> Result<Option<House
         .optional()?)
 }
 
-pub fn create_household(
-    conn: &Connection,
-    actor: &str,
-    secret: &[u8],
-    input: &HouseholdInput,
-    default_events: &[String],
-) -> Result<i64> {
+pub fn create_household(conn: &Connection, actor: &str, secret: &[u8], input: &HouseholdInput, default_events: &[String]) -> Result<i64> {
     create_household_as(conn, actor, actor, false, secret, input, default_events)
 }
 
@@ -289,7 +282,11 @@ pub fn create_household_as(
     input: &HouseholdInput,
     default_events: &[String],
 ) -> Result<i64> {
-    if !input.guests.iter().any(|g| g.first_name.as_deref().is_some_and(|n| !n.trim().is_empty()) && g.plus_one_label.as_deref().is_none_or(str::is_empty)) {
+    if !input
+        .guests
+        .iter()
+        .any(|g| g.first_name.as_deref().is_some_and(|n| !n.trim().is_empty()) && g.plus_one_label.as_deref().is_none_or(str::is_empty))
+    {
         bail!("a household needs at least one named person");
     }
     let ts = now();
@@ -319,7 +316,14 @@ pub fn create_household_as(
     }
     let name = household_name(&guests_for(&tx, id)?);
     tx.execute("UPDATE households SET name = ?1, greeting = ?1 WHERE id = ?2", params![name, id])?;
-    audit(&tx, actor, if pending { "household.request" } else { "household.create" }, "household", &id.to_string(), &serde_json::to_value(input)?)?;
+    audit(
+        &tx,
+        actor,
+        if pending { "household.request" } else { "household.create" },
+        "household",
+        &id.to_string(),
+        &serde_json::to_value(input)?,
+    )?;
     tx.commit()?;
     Ok(id)
 }
@@ -422,9 +426,19 @@ pub fn review_request(conn: &Connection, actor: &str, id: i64, approve: bool) ->
     if approve {
         tx.execute("UPDATE households SET request_status = '', updated_at = ?1 WHERE id = ?2", params![now(), id])?;
     } else {
-        tx.execute("UPDATE households SET request_status = 'declined', archived_at = ?1, updated_at = ?1 WHERE id = ?2", params![now(), id])?;
+        tx.execute(
+            "UPDATE households SET request_status = 'declined', archived_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params![now(), id],
+        )?;
     }
-    audit(&tx, actor, if approve { "household.request_approved" } else { "household.request_declined" }, "household", &id.to_string(), &json!({"added_by": h.added_by}))?;
+    audit(
+        &tx,
+        actor,
+        if approve { "household.request_approved" } else { "household.request_declined" },
+        "household",
+        &id.to_string(),
+        &json!({"added_by": h.added_by}),
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -506,11 +520,10 @@ pub fn mark_sent(conn: &Connection, id: i64, which: &str) -> Result<()> {
 pub fn calendar_sequences(conn: &Connection, events: &[crate::config::Event]) -> Result<HashMap<String, i64>> {
     let mut out = HashMap::new();
     for e in events {
-        let fp = tokens::sha256_hex(&format!(
-            "{}|{:?}|{:?}|{}|{}|{:?}|{:?}",
-            e.name, e.starts, e.ends, e.venue, e.address, e.dress, e.note
-        ))[..16]
-            .to_string();
+        let fp =
+            tokens::sha256_hex(&format!("{}|{:?}|{:?}|{}|{}|{:?}|{:?}", e.name, e.starts, e.ends, e.venue, e.address, e.dress, e.note))
+                [..16]
+                .to_string();
         let key = format!("ics_sequence:{}", e.slug);
         let stored = setting(conn, &key)?;
         let (seq, old_fp) = stored
@@ -765,10 +778,11 @@ pub struct GuestInput {
 
 impl GuestInput {
     pub fn validate(&self) -> Result<()> {
-        if let Some(e) = &self.email {
-            if !e.is_empty() && !plausible_email(e) {
-                bail!("'{e}' does not look like an email address");
-            }
+        if let Some(e) = &self.email
+            && !e.is_empty()
+            && !plausible_email(e)
+        {
+            bail!("'{e}' does not look like an email address");
         }
         for v in [&self.first_name, &self.last_name, &self.plus_one_label, &self.dietary, &self.notes].into_iter().flatten() {
             if v.len() > 2000 {
@@ -796,9 +810,8 @@ impl GuestInput {
 }
 
 pub fn guests_for(conn: &Connection, household_id: i64) -> Result<Vec<Guest>> {
-    let mut st = conn.prepare(
-        "SELECT * FROM guests WHERE household_id = ?1 AND archived_at IS NULL ORDER BY plus_one_of IS NOT NULL, sort, id",
-    )?;
+    let mut st =
+        conn.prepare("SELECT * FROM guests WHERE household_id = ?1 AND archived_at IS NULL ORDER BY plus_one_of IS NOT NULL, sort, id")?;
     let rows = st.query_map([household_id], Guest::from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -1262,11 +1275,9 @@ pub fn create_invite(conn: &Connection, actor: &str, access: &str, hours: i64) -
 /// Returns the invite's (role, relation) if the code is valid and unused.
 pub fn check_invite(conn: &Connection, code: &str) -> Result<Option<(String, String)>> {
     let row: Option<(String, String, String, Option<String>)> = conn
-        .query_row(
-            "SELECT role, relation, expires_at, used_at FROM invites WHERE code_hash = ?1",
-            [tokens::sha256_hex(code.trim())],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
+        .query_row("SELECT role, relation, expires_at, used_at FROM invites WHERE code_hash = ?1", [tokens::sha256_hex(code.trim())], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
         .optional()?;
     Ok(row.and_then(|(role, relation, exp, used)| (used.is_none() && exp > now()).then_some((role, relation))))
 }
@@ -1329,7 +1340,8 @@ pub mod tests {
     fn email_opens_and_unanswered_invitations() {
         let db = mem();
         db.with(|c| {
-            let input = HouseholdInput { guests: vec![GuestInput { first_name: Some("Ada".into()), ..Default::default() }], ..Default::default() };
+            let input =
+                HouseholdInput { guests: vec![GuestInput { first_name: Some("Ada".into()), ..Default::default() }], ..Default::default() };
             let hid = create_household(c, "t", &[1; 32], &input, &[])?;
             let test = create_send(c, hid, "me@example.com", "invitation", true)?;
             let real = create_send(c, hid, "ada@example.com", "invitation", false)?;
@@ -1349,7 +1361,8 @@ pub mod tests {
             c.execute("UPDATE email_sends SET opened_at = '2020-01-01T00:00:00Z' WHERE id = ?1", [&real])?;
             assert_eq!(flag_unanswered_invitations(c, &now(), "https://x")?, 1);
             assert_eq!(flag_unanswered_invitations(c, &now(), "https://x")?, 0, "only once");
-            let n: i64 = c.query_row("SELECT COUNT(*) FROM outbox WHERE kind = 'discord' AND payload LIKE '%hasn''t replied%'", [], |r| r.get(0))?;
+            let n: i64 =
+                c.query_row("SELECT COUNT(*) FROM outbox WHERE kind = 'discord' AND payload LIKE '%hasn''t replied%'", [], |r| r.get(0))?;
             assert_eq!(n, 1);
             Ok(())
         })
@@ -1380,7 +1393,8 @@ pub mod tests {
             assert!(c.execute("DELETE FROM audit", []).is_err(), "audit must be append-only");
 
             // A helper's household is a request: no working link and not listed until approved.
-            let req = HouseholdInput { guests: vec![GuestInput { first_name: Some("Rex".into()), ..Default::default() }], ..Default::default() };
+            let req =
+                HouseholdInput { guests: vec![GuestInput { first_name: Some("Rex".into()), ..Default::default() }], ..Default::default() };
             let rid = create_household_as(c, "user:julie", "Julie (A's parent)", true, &[1; 32], &req, &["ceremony".into()])?;
             let rh = must_household(c, rid)?;
             assert_eq!((rh.added_by.as_str(), rh.request_status.as_str()), ("Julie (A's parent)", "pending"));

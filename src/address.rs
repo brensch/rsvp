@@ -13,13 +13,8 @@ use crate::journal::{Entry, Journal};
 use crate::store::{self, Household};
 
 /// Countries offered in the form: (display name, CLDR region code).
-pub const COUNTRIES: &[(&str, &str)] = &[
-    ("United States", "US"),
-    ("Australia", "AU"),
-    ("New Zealand", "NZ"),
-    ("United Kingdom", "GB"),
-    ("Canada", "CA"),
-];
+pub const COUNTRIES: &[(&str, &str)] =
+    &[("United States", "US"), ("Australia", "AU"), ("New Zealand", "NZ"), ("United Kingdom", "GB"), ("Canada", "CA")];
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Address {
@@ -59,12 +54,13 @@ impl Address {
 
     pub fn region_code(&self) -> Option<&'static str> {
         let c = self.country.trim().to_lowercase();
-        COUNTRIES.iter().find(|(name, code)| c == name.to_lowercase() || c == code.to_lowercase()).map(|(_, code)| *code)
-            .or(match c.as_str() {
+        COUNTRIES.iter().find(|(name, code)| c == name.to_lowercase() || c == code.to_lowercase()).map(|(_, code)| *code).or(
+            match c.as_str() {
                 "usa" | "united states of america" => Some("US"),
                 "uk" | "england" | "scotland" | "wales" => Some("GB"),
                 _ => None,
-            })
+            },
+        )
     }
 
     pub fn validate_fields(&self) -> Result<(), String> {
@@ -165,8 +161,13 @@ pub async fn check(http: &reqwest::Client, key: &str, input: &Address) -> Result
     }
     let r = &v["result"];
     let pa = &r["address"]["postalAddress"];
-    let lines: Vec<String> = pa["addressLines"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-    let country = COUNTRIES.iter().find(|(_, c)| Some(*c) == pa["regionCode"].as_str()).map(|(n, _)| n.to_string()).unwrap_or_else(|| input.country.clone());
+    let lines: Vec<String> =
+        pa["addressLines"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    let country = COUNTRIES
+        .iter()
+        .find(|(_, c)| Some(*c) == pa["regionCode"].as_str())
+        .map(|(n, _)| n.to_string())
+        .unwrap_or_else(|| input.country.clone());
     let suggestion = Address {
         addr1: lines.first().cloned().unwrap_or_default(),
         addr2: lines.get(1..).map(|l| l.join(", ")).unwrap_or_default(),
@@ -175,14 +176,20 @@ pub async fn check(http: &reqwest::Client, key: &str, input: &Address) -> Result
         postcode: pa["postalCode"].as_str().unwrap_or("").to_string(),
         country,
     };
-    let list = |k: &str| r["address"][k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.replace('_', " "))).collect()).unwrap_or_default();
+    let list = |k: &str| {
+        r["address"][k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.replace('_', " "))).collect()).unwrap_or_default()
+    };
     let action = match r["verdict"]["possibleNextAction"].as_str() {
         Some("ACCEPT") => Action::Accept,
         Some("CONFIRM_ADD_SUBPREMISES") => Action::AddUnit,
         Some("CONFIRM") => Action::Confirm,
         Some("FIX") => Action::Fix,
         // Older responses without possibleNextAction: fall back to the verdict flags.
-        _ if r["verdict"]["addressComplete"].as_bool() == Some(true) && r["verdict"]["hasUnconfirmedComponents"].as_bool() != Some(true) => Action::Accept,
+        _ if r["verdict"]["addressComplete"].as_bool() == Some(true)
+            && r["verdict"]["hasUnconfirmedComponents"].as_bool() != Some(true) =>
+        {
+            Action::Accept
+        }
         _ => Action::Fix,
     };
     Ok(Some(Check { action, suggestion, unconfirmed: list("unconfirmedComponentTypes"), missing: list("missingComponentTypes") }))
@@ -218,9 +225,26 @@ pub fn apply(tx: &Connection, h: &Household, entry: &Entry, notify: bool) -> Res
     tx.execute(
         "UPDATE households SET addr1 = ?1, addr2 = ?2, city = ?3, region = ?4, postcode = ?5, country = ?6,
          address_status = ?7, address_at = ?8, updated_at = ?8 WHERE id = ?9",
-        params![a.addr1.trim(), a.addr2.trim(), a.city.trim(), a.region.trim(), a.postcode.trim(), a.country.trim(), sub.status, entry.received_at, h.id],
+        params![
+            a.addr1.trim(),
+            a.addr2.trim(),
+            a.city.trim(),
+            a.region.trim(),
+            a.postcode.trim(),
+            a.country.trim(),
+            sub.status,
+            entry.received_at,
+            h.id
+        ],
     )?;
-    store::audit(tx, &format!("guest:{}", h.id), "address.submit", "household", &h.id.to_string(), &json!({"submission": entry.id, "status": sub.status}))?;
+    store::audit(
+        tx,
+        &format!("guest:{}", h.id),
+        "address.submit",
+        "household",
+        &h.id.to_string(),
+        &json!({"submission": entry.id, "status": sub.status}),
+    )?;
     if notify {
         let first = h.address_lines().is_empty();
         let status = match sub.status.as_str() {
@@ -313,7 +337,8 @@ pub async fn place(http: &reqwest::Client, key: &str, id: &str, session: &str) -
         bail!("place details {status}: {}", v["error"]["message"].as_str().unwrap_or(""));
     }
     let pa = &v["postalAddress"];
-    let lines: Vec<String> = pa["addressLines"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    let lines: Vec<String> =
+        pa["addressLines"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
     let code = pa["regionCode"].as_str().unwrap_or("");
     Ok(Address {
         addr1: lines.first().cloned().unwrap_or_default(),

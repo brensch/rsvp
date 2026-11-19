@@ -67,7 +67,12 @@ impl Worker {
                 let rows = st
                     .query_map([now()], |r| {
                         let p: String = r.get(2)?;
-                        Ok(Job { id: r.get(0)?, kind: r.get(1)?, payload: serde_json::from_str(&p).unwrap_or(Value::Null), attempts: r.get(3)? })
+                        Ok(Job {
+                            id: r.get(0)?,
+                            kind: r.get(1)?,
+                            payload: serde_json::from_str(&p).unwrap_or(Value::Null),
+                            attempts: r.get(3)?,
+                        })
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(rows)
@@ -186,7 +191,14 @@ impl Worker {
                     store::enqueue(&tx, "email_one", &json!({"send_id": send_id}))?;
                     sends.push(json!({"send": send_id, "to": addr}));
                 }
-                store::audit(&tx, "system", "email.queued", "household", &hid.to_string(), &json!({"kind": kind, "test": test_to.is_some(), "emails": sends}))?;
+                store::audit(
+                    &tx,
+                    "system",
+                    "email.queued",
+                    "household",
+                    &hid.to_string(),
+                    &json!({"kind": kind, "test": test_to.is_some(), "emails": sends}),
+                )?;
                 tx.commit()?;
                 Ok(to.len())
             })
@@ -224,7 +236,8 @@ impl Worker {
         let (r, cfg, env) = (self.renderer.clone(), self.cfg.clone(), self.env.clone());
         let (kind, to, sid) = (send.kind.clone(), send.address.clone(), send_id.clone());
         let hid = h.id;
-        let msg = tokio::task::spawn_blocking(move || crate::email::build(&r, &cfg, &env, &kind, h, guests, responses, &to, &sid)).await??;
+        let msg =
+            tokio::task::spawn_blocking(move || crate::email::build(&r, &cfg, &env, &kind, h, guests, responses, &to, &sid)).await??;
         // The picture the email loads (and counts) from /e/<id>.png.
         let card = crate::email::card_file(&self.env, hid, &send.kind);
         std::fs::create_dir_all(card.parent().unwrap())?;
@@ -297,7 +310,9 @@ pub fn discord_text(cfg: &Config, p: &Value) -> String {
     let s = |k: &str| p[k].as_str().unwrap_or("").to_string();
     match p["type"].as_str().unwrap_or("") {
         "rsvp" => format!("💌 {}\n{base}/admin", s("text")),
-        "signup" if s("role") == "pending" => format!("🔐 **{}** signed up for Wedding HQ and is waiting for approval.\n{base}/admin/users", s("name")),
+        "signup" if s("role") == "pending" => {
+            format!("🔐 **{}** signed up for Wedding HQ and is waiting for approval.\n{base}/admin/users", s("name"))
+        }
         "signup" => format!("🔐 **{}** joined Wedding HQ via invite as {}.", s("name"), s("role")),
         "test" => format!("👋 Test notification from {}. Notifications are working.", s("name")),
         "backup" => s("text"),

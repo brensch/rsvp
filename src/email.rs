@@ -43,6 +43,7 @@ pub fn tracking_url(cfg: &Config, send_id: &str) -> String {
     format!("{}/e/{send_id}.png", cfg.site.base_url)
 }
 
+#[allow(clippy::too_many_arguments)] // everything one personalised email needs
 pub fn build(
     renderer: &Renderer,
     cfg: &Config,
@@ -68,7 +69,11 @@ pub fn build(
     if asset_kind == Kind::Invitation {
         let rows = vec![(h, guests, responses)];
         let doc = assets::render_households(renderer, cfg, env, asset_kind, Layout::Card, &rows)?;
-        attachments.push(crate::gmail::Attachment { filename: "invitation.pdf".into(), mime: "application/pdf".into(), bytes: assets::to_pdf(&doc)? });
+        attachments.push(crate::gmail::Attachment {
+            filename: "invitation.pdf".into(),
+            mime: "application/pdf".into(),
+            bytes: assets::to_pdf(&doc)?,
+        });
     }
     let card_src = tracking_url(cfg, send_id);
 
@@ -90,7 +95,9 @@ pub fn build(
     }
     let date_line = cfg
         .wedding_date()
-        .map(|d| format!("{} · {} {} · {}", assets::words::weekday_name(d.weekday()), d.day(), assets::words::month_name(d.month()), d.year()))
+        .map(|d| {
+            format!("{} · {} {} · {}", assets::words::weekday_name(d.weekday()), d.day(), assets::words::month_name(d.month()), d.year())
+        })
         .unwrap_or_default();
     // The top of the email is one picture typeset in the site's own fonts (served from
     // /e/<id>.png, which records the open). Its alt text carries the same words.

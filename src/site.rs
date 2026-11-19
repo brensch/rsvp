@@ -23,7 +23,8 @@ pub const BUILTIN: &[&str] = &["schedule", "gallery"];
 /// Slugs that would collide with other routes.
 const RESERVED: &[&str] = &["admin", "i", "static", "fonts", "media", "healthz", "robots.txt", "favicon.ico"];
 
-pub const AUDIENCES: &[(&str, &str)] = &[("all", "Everyone"), ("australia", "Households in Australia"), ("us", "Households outside Australia")];
+pub const AUDIENCES: &[(&str, &str)] =
+    &[("all", "Everyone"), ("australia", "Households in Australia"), ("us", "Households outside Australia")];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Page {
@@ -335,7 +336,13 @@ pub fn move_photo(c: &Connection, actor: &str, id: i64, dir: i64) -> Result<()> 
     let tx = crate::db::begin(c)?;
     // Re-number so equal sort values can't get stuck.
     for (n, p) in list.iter().enumerate() {
-        let pos = if p.id == a.id { j as usize } else if p.id == b.id { i } else { n };
+        let pos = if p.id == a.id {
+            j as usize
+        } else if p.id == b.id {
+            i
+        } else {
+            n
+        };
         tx.execute("UPDATE photos SET sort = ?1 WHERE id = ?2", params![(pos as i64 + 1) * 10, p.id])?;
     }
     audit(&tx, actor, "photo.move", "photo", &id.to_string(), &json!({"dir": dir}))?;
@@ -359,7 +366,8 @@ mod tests {
 
     #[test]
     fn markdown_never_renders_html() {
-        let out = markdown("## Hi\n\n<script>alert(1)</script>\n\nInline <img src=x onerror=alert(1)> and **bold** [link](https://example.com)");
+        let out =
+            markdown("## Hi\n\n<script>alert(1)</script>\n\nInline <img src=x onerror=alert(1)> and **bold** [link](https://example.com)");
         assert!(out.contains("<h2>Hi</h2>"));
         assert!(!out.contains("<script>") && !out.contains("<img"), "{out}");
         assert!(out.contains("&lt;script&gt;") && out.contains("&lt;img"));

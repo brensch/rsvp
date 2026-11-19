@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -93,9 +93,14 @@ pub enum Cmd {
 pub enum UsersCmd {
     List,
     /// Set access: owner | a_parent | b_parent | helper | pending | disabled
-    SetRole { name: String, role: String },
+    SetRole {
+        name: String,
+        role: String,
+    },
     /// Permanently delete a disabled or pending account
-    Delete { name: String },
+    Delete {
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -108,28 +113,42 @@ pub enum HouseholdCmd {
         all: bool,
     },
     /// Show one household with guests, responses and link
-    Show { id: i64 },
+    Show {
+        id: i64,
+    },
     /// Create from JSON (HouseholdInput, may include "guests": [...]). Use '-' to read stdin.
     Add {
         #[arg(long)]
         json: String,
     },
     /// Create many from a JSON array file of HouseholdInput objects ('-' for stdin)
-    Import { file: String },
+    Import {
+        file: String,
+    },
     /// Update fields from JSON (only the keys you pass change)
     Update {
         id: i64,
         #[arg(long)]
         json: String,
     },
-    Archive { id: i64 },
-    Restore { id: i64 },
+    Archive {
+        id: i64,
+    },
+    Restore {
+        id: i64,
+    },
     /// Print the guest link
-    Link { id: i64 },
+    Link {
+        id: i64,
+    },
     /// Replace the guest link (old link stops working)
-    RotateLink { id: i64 },
+    RotateLink {
+        id: i64,
+    },
     /// Search by name, greeting, guest name, email or tag
-    Find { query: String },
+    Find {
+        query: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -146,8 +165,13 @@ pub enum GuestCmd {
         json: String,
     },
     /// Move a person to another household
-    Move { id: i64, household: i64 },
-    Archive { id: i64 },
+    Move {
+        id: i64,
+        household: i64,
+    },
+    Archive {
+        id: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -197,8 +221,8 @@ fn print(v: &Value) {
 }
 
 /// The secret is only needed for link operations; load it on demand.
-fn env(data: &PathBuf) -> Result<Env> {
-    Env::from_env(data.clone())
+fn env(data: &Path) -> Result<Env> {
+    Env::from_env(data.to_path_buf())
 }
 
 pub fn run_sync(cli: Cli) -> Result<()> {
@@ -305,7 +329,8 @@ pub fn run_sync(cli: Cli) -> Result<()> {
             let renderer = Renderer::new(&cli.data);
             let doc = db.with(|c| {
                 if kind == Kind::Report {
-                    let data = assets::report_data(&cfg, &store::list_households(c, false)?, &store::all_guests(c)?, &store::all_responses(c)?)?;
+                    let data =
+                        assets::report_data(&cfg, &store::list_households(c, false)?, &store::all_guests(c)?, &store::all_responses(c)?)?;
                     return renderer.compile(kind, &data, HashMap::new());
                 }
                 let mut rows = vec![];
@@ -328,7 +353,9 @@ pub fn run_sync(cli: Cli) -> Result<()> {
             let missing = db.with(|c| crate::rsvp::journal_missing(c, &journal))?;
             match cmd {
                 JournalCmd::Verify => {
-                    print(&json!({"missing": missing.iter().map(|e| json!({"id": e.id, "household_id": e.household_id, "received_at": e.received_at})).collect::<Vec<_>>()}));
+                    print(
+                        &json!({"missing": missing.iter().map(|e| json!({"id": e.id, "household_id": e.household_id, "received_at": e.received_at})).collect::<Vec<_>>()}),
+                    );
                     if !missing.is_empty() {
                         bail!("{} journal entries missing from the database; run `rsvp journal replay`", missing.len());
                     }
@@ -361,7 +388,7 @@ pub fn run_sync(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn household(db: &Db, cfg: &Config, data: &PathBuf, who: &str, events: &[String], defaults: &[String], cmd: HouseholdCmd) -> Result<()> {
+fn household(db: &Db, cfg: &Config, data: &Path, who: &str, events: &[String], defaults: &[String], cmd: HouseholdCmd) -> Result<()> {
     match cmd {
         HouseholdCmd::List { json: as_json, all } => {
             let (hs, guests, resp) = db.with(|c| Ok((store::list_households(c, all)?, store::all_guests(c)?, store::all_responses(c)?)))?;
@@ -397,8 +424,14 @@ fn household(db: &Db, cfg: &Config, data: &PathBuf, who: &str, events: &[String]
         }
         HouseholdCmd::Show { id } => {
             let env = env(data)?;
-            let (h, guests, responses, subs) =
-                db.with(|c| Ok((store::must_household(c, id)?, store::guests_for(c, id)?, store::responses_for(c, id)?, store::submissions(c, Some(id), 5)?)))?;
+            let (h, guests, responses, subs) = db.with(|c| {
+                Ok((
+                    store::must_household(c, id)?,
+                    store::guests_for(c, id)?,
+                    store::responses_for(c, id)?,
+                    store::submissions(c, Some(id), 5)?,
+                ))
+            })?;
             let link = assets::link(cfg, &store::household_token(&env.secret, &h));
             print(&json!({"household": h, "guests": guests, "responses": responses, "recent_submissions": subs, "link": link}));
         }
@@ -481,7 +514,9 @@ fn rsvps(db: &Db, cfg: &Config, as_json: bool) -> Result<()> {
             .map(|m| (m.slug.clone(), resp.values().filter(|r| r.event_slug == e.slug && r.attending && r.meal == m.slug).count()))
             .filter(|(_, n)| *n > 0)
             .collect();
-        events.push(json!({"event": e.slug, "invited": invited.len(), "yes": yes, "no": no, "waiting": invited.len() - yes - no, "meals": meals}));
+        events.push(
+            json!({"event": e.slug, "invited": invited.len(), "yes": yes, "no": no, "waiting": invited.len() - yes - no, "meals": meals}),
+        );
     }
     let replied = hs.iter().filter(|h| h.rsvp_at.is_some()).count();
     let summary = json!({"households": hs.len(), "replied": replied, "events": events});
@@ -490,7 +525,14 @@ fn rsvps(db: &Db, cfg: &Config, as_json: bool) -> Result<()> {
     } else {
         println!("{replied}/{} households replied", hs.len());
         for e in &events {
-            println!("  {:<14} yes {:>3}  no {:>3}  waiting {:>3}  meals {}", e["event"].as_str().unwrap(), e["yes"], e["no"], e["waiting"], e["meals"]);
+            println!(
+                "  {:<14} yes {:>3}  no {:>3}  waiting {:>3}  meals {}",
+                e["event"].as_str().unwrap(),
+                e["yes"],
+                e["no"],
+                e["waiting"],
+                e["meals"]
+            );
         }
     }
     Ok(())

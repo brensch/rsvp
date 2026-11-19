@@ -4,8 +4,26 @@
 use time::{Date, Month, PrimitiveDateTime, Weekday};
 
 const ONES: [&str; 20] = [
-    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
-    "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
 ];
 const TENS: [&str; 10] = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
 
@@ -14,11 +32,11 @@ pub fn number(n: u32) -> String {
         0..=19 => ONES[n as usize].into(),
         20..=99 => {
             let t = TENS[(n / 10) as usize];
-            if n % 10 == 0 { t.into() } else { format!("{t}-{}", ONES[(n % 10) as usize]) }
+            if n.is_multiple_of(10) { t.into() } else { format!("{t}-{}", ONES[(n % 10) as usize]) }
         }
         100..=999 => {
             let h = format!("{} hundred", ONES[(n / 100) as usize]);
-            if n % 100 == 0 { h } else { format!("{h} and {}", number(n % 100)) }
+            if n.is_multiple_of(100) { h } else { format!("{h} and {}", number(n % 100)) }
         }
         _ => {
             let th = format!("{} thousand", number(n / 1000));

@@ -109,13 +109,19 @@ pub async fn connect(http: &reqwest::Client, cfg: &Config, env: &Env, code: &str
         .send()
         .await?;
     if !resp.status().is_success() {
-        bail!("Google token exchange failed: {} {}", resp.status(), resp.text().await.unwrap_or_default().chars().take(300).collect::<String>());
+        bail!(
+            "Google token exchange failed: {} {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default().chars().take(300).collect::<String>()
+        );
     }
     let t: TokenResponse = resp.json().await?;
     if !t.scope.split(' ').any(|s| s == "https://www.googleapis.com/auth/gmail.send") {
         bail!("Google didn't grant permission to send email. Tick the \"Send email on your behalf\" box on the consent screen.");
     }
-    let refresh_token = t.refresh_token.context("Google didn't return a refresh token; remove the app's access at myaccount.google.com/permissions and connect again")?;
+    let refresh_token = t
+        .refresh_token
+        .context("Google didn't return a refresh token; remove the app's access at myaccount.google.com/permissions and connect again")?;
     // The ID token came straight from Google over TLS, so its claims can be read without re-verifying.
     let email = t
         .id_token
@@ -162,16 +168,21 @@ impl From<anyhow::Error> for SendError {
 impl Sender {
     async fn access_token(&self, http: &reqwest::Client, env: &Env) -> Result<String> {
         let mut cached = self.cached.lock().await;
-        if let Some((tok, until)) = cached.as_ref() {
-            if Instant::now() < *until {
-                return Ok(tok.clone());
-            }
+        if let Some((tok, until)) = cached.as_ref()
+            && Instant::now() < *until
+        {
+            return Ok(tok.clone());
         }
         let stored = connected(env).context("Gmail isn't connected (Settings, Connect Gmail)")?;
         let (id, secret) = client(env)?;
         let resp = http
             .post(endpoint(TOKEN_URL))
-            .form(&[("refresh_token", stored.refresh_token.as_str()), ("client_id", id), ("client_secret", secret), ("grant_type", "refresh_token")])
+            .form(&[
+                ("refresh_token", stored.refresh_token.as_str()),
+                ("client_id", id),
+                ("client_secret", secret),
+                ("grant_type", "refresh_token"),
+            ])
             .send()
             .await?;
         if !resp.status().is_success() {

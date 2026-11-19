@@ -80,8 +80,6 @@ pub struct InfoSection {
     pub audience: Option<String>,
 }
 
-
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Site {
     /// Public origin, no trailing slash: https://wedding.example.com
@@ -301,8 +299,7 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("reading config {}", path.display()))?;
+        let raw = std::fs::read_to_string(path).with_context(|| format!("reading config {}", path.display()))?;
         let mut cfg: Config = toml::from_str(&raw).context("parsing wedding.toml")?;
         cfg.prose = crate::prose::Prose::load(&path.with_file_name("copy.yaml"))?;
         cfg.validate()?;
@@ -364,18 +361,11 @@ impl Config {
         self.meals.iter().find(|m| m.slug == slug)
     }
     pub fn title(&self) -> String {
-        self.site
-            .title
-            .clone()
-            .unwrap_or_else(|| format!("{} & {}", self.couple.a_first, self.couple.b_first))
+        self.site.title.clone().unwrap_or_else(|| format!("{} & {}", self.couple.a_first, self.couple.b_first))
     }
     pub fn monogram(&self) -> String {
         self.couple.monogram.clone().unwrap_or_else(|| {
-            format!(
-                "{}{}",
-                self.couple.a_first.chars().next().unwrap_or('A'),
-                self.couple.b_first.chars().next().unwrap_or('B')
-            )
+            format!("{}{}", self.couple.a_first.chars().next().unwrap_or('A'), self.couple.b_first.chars().next().unwrap_or('B'))
         })
     }
     /// True once the RSVP deadline (end of day, venue time) has passed.
@@ -416,9 +406,8 @@ pub struct Env {
 
 impl Env {
     pub fn from_env(data_dir: PathBuf) -> Result<Self> {
-        let secret_hex = std::env::var("RSVP_SECRET").context(
-            "RSVP_SECRET is not set (generate one with `rsvp gen-secret` and put it in the env file)",
-        )?;
+        let secret_hex = std::env::var("RSVP_SECRET")
+            .context("RSVP_SECRET is not set (generate one with `rsvp gen-secret` and put it in the env file)")?;
         let secret = hex::decode(secret_hex.trim()).context("RSVP_SECRET must be hex")?;
         if secret.len() < 32 {
             bail!("RSVP_SECRET must be at least 32 bytes (64 hex chars)");

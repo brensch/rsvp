@@ -399,9 +399,7 @@ fn migrate(conn: &Connection) -> Result<()> {
 }
 
 pub fn now() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap()
+    time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap()
 }
 
 /// Nestable write transaction. Outermost: BEGIN IMMEDIATE (takes the write lock
@@ -458,7 +456,11 @@ mod tests {
         conn.execute_batch("PRAGMA user_version = 12").unwrap();
         let ts = "2026-01-01T00:00:00Z";
         for (hid, people) in [(1, &[("Ann", 1)][..]), (2, &[("Bo", 1), ("Cy", 0)][..]), (3, &[("Di", 0)][..])] {
-            conn.execute("INSERT INTO households (id, name, greeting, events, created_at, updated_at) VALUES (?1, 'h', 'h', '[]', ?2, ?2)", rusqlite::params![hid, ts]).unwrap();
+            conn.execute(
+                "INSERT INTO households (id, name, greeting, events, created_at, updated_at) VALUES (?1, 'h', 'h', '[]', ?2, ?2)",
+                rusqlite::params![hid, ts],
+            )
+            .unwrap();
             for (name, p1) in people {
                 conn.execute(
                     "INSERT INTO guests (household_id, first_name, plus_one_allowed, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
@@ -491,7 +493,11 @@ mod tests {
         let both = r#"["rehearsal-dinner","wedding"]"#;
         // 1: everyone wedding-only -> household wedding-only. 2: only the kid had an exception -> dropped.
         for (hid, people) in [(1, vec![Some(r#"["wedding"]"#), Some(r#"["wedding"]"#)]), (2, vec![None, Some(r#"["rehearsal-dinner"]"#)])] {
-            conn.execute("INSERT INTO households (id, name, greeting, events, created_at, updated_at) VALUES (?1, 'h', 'h', ?2, ?3, ?3)", rusqlite::params![hid, both, ts]).unwrap();
+            conn.execute(
+                "INSERT INTO households (id, name, greeting, events, created_at, updated_at) VALUES (?1, 'h', 'h', ?2, ?3, ?3)",
+                rusqlite::params![hid, both, ts],
+            )
+            .unwrap();
             for ev in people {
                 conn.execute(
                     "INSERT INTO guests (household_id, first_name, events, created_at, updated_at) VALUES (?1, 'x', ?2, ?3, ?3)",

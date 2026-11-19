@@ -142,18 +142,17 @@ async fn media(State(st): State<AppState>, Path(file): Path<String>, headers: He
     if !site::valid_media_name(&file) {
         return Ok(ui::not_found());
     }
-    let allowed = household(&st, &headers).await?.is_some()
-        || super::auth::session_from(&st, &headers).await?.is_some_and(|s| s.user.is_active());
+    let allowed =
+        household(&st, &headers).await?.is_some() || super::auth::session_from(&st, &headers).await?.is_some_and(|s| s.user.is_active());
     if !allowed {
         return Ok(invite_only());
     }
     let path = site::media_dir(&st.env.data_dir).join(&file);
     match tokio::fs::read(&path).await {
-        Ok(bytes) => Ok((
-            [(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "private, max-age=604800, immutable")],
-            bytes,
-        )
-            .into_response()),
+        Ok(bytes) => {
+            Ok(([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "private, max-age=604800, immutable")], bytes)
+                .into_response())
+        }
         Err(_) => Ok(ui::not_found()),
     }
 }
