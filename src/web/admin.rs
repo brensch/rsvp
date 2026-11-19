@@ -632,8 +632,35 @@ struct ListQuery {
     side: Option<String>,
     filter: Option<String>,
     added: Option<String>,
+    sort: Option<String>,
+    dir: Option<String>,
     m: Option<String>,
 }
+
+/// People who ought to have their own email (everyone but children and unnamed plus-one
+/// slots): (how many have one, how many there are).
+fn email_counts(gs: &[Guest]) -> (usize, usize) {
+    let want: Vec<&Guest> = gs.iter().filter(|g| !g.is_child && !g.unnamed_plus_one()).collect();
+    (want.iter().filter(|g| !g.email.trim().is_empty()).count(), want.len())
+}
+
+/// A named grown-up (not a plus one) with no surname yet.
+fn missing_surname(g: &Guest) -> bool {
+    g.last_name.trim().is_empty() && g.plus_one_of.is_none() && !g.is_plus_one() && !g.is_child
+}
+
+/// Households table columns that can be sorted, as (key, label, tooltip, extra class).
+const SORT_COLUMNS: [(&str, &str, &str, &str); 9] = [
+    ("name", "Household", "", ""),
+    ("people", "#", "Number of people", "num"),
+    ("emails", "Emails", "People with an email address / people who should have one (not children or unnamed plus ones)", "num"),
+    ("tier", "Tier", "", ""),
+    ("au", "AU", "Lives in Australia", ""),
+    ("likely", "Likely?", "Unlikely to come", ""),
+    ("invited", "Invited to", "", ""),
+    ("checked", "Checked", "Names and details checked", ""),
+    ("reply", "Reply · sent", "Reply status · S = save the date sent, I = invitation sent", ""),
+];
 
 fn side_short(cfg: &Config, side: &str) -> String {
     match side {
@@ -742,7 +769,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
     let cfg = &st.cfg;
     let needle = q.q.clone().unwrap_or_default().to_lowercase();
     let tier_q: Option<i64> = q.tier.as_deref().and_then(|t| t.parse().ok());
-    let rows: Vec<(&Household, Vec<Guest>, Status)> = snap
+    let mut rows: Vec<(&Household, Vec<Guest>, Status)> = snap
         .households
         .iter()
         .map(|h| (h, snap.guests_of(h.id), snap.status(h)))
@@ -763,7 +790,14 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
             let side_ok = q.side.as_deref().is_none_or(|sd| sd.is_empty() || h.side == sd);
             let tier_ok = tier_q.is_none_or(|t| h.tier == t);
             let added_ok = q.added.as_deref().is_none_or(|a| a.is_empty() || h.added_by == a);
+            let (have_email, want_email) = email_counts(gs);
             let filter_ok = match q.filter.as_deref() {
+                Some("incomplete") => {
+                    have_email < want_email || h.address_lines().is_empty() || gs.iter().any(missing_surname)
+                }
+                Some("some_email") => have_email < want_email,
+                Some("no_surname") => gs.iter().any(missing_surname),
+                Some("unnamed_plus_one") => gs.iter().any(|g| g.unnamed_plus_one()),
                 Some("no_email") => h.email.is_empty() && gs.iter().all(|g| g.email.is_empty()),
                 Some("no_address") => h.address_lines().is_empty(),
                 Some("no_events") => h.events.is_empty(),
@@ -785,18 +819,58 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
             text_ok && status_ok && side_ok && tier_ok && added_ok && filter_ok
         })
         .collect();
+    // Sort by the chosen column; ties fall back to the household name, A to Z.
+    let sort_key = q.sort.as_deref().filter(|k| SORT_COLUMNS.iter().any(|c| c.0 == *k));
+    let desc = q.dir.as_deref() == Some("desc");
+    if let Some(key) = sort_key {
+        let rank = |(h, gs, status): &(&Household, Vec<Guest>, Status)| -> i64 {
+            match key {
+                "people" => gs.len() as i64,
+                "emails" => {
+                    let (have, want) = email_counts(gs);
+                    if want == 0 { 1_000_000 } else { (have * 1000 / want) as i64 * 100 + want as i64 }
+                }
+                "tier" => h.tier,
+                "au" => h.australia as i64,
+                "likely" => !h.unlikely as i64,
+                "invited" => h.events.len() as i64,
+                "checked" => h.checked_at.is_some() as i64,
+                "reply" => match status {
+                    Status::NoReply => 0,
+                    Status::Declined => 1,
+                    Status::Partial => 2,
+                    Status::Attending => 3,
+                },
+                _ => 0,
+            }
+        };
+        let name = |r: &(&Household, Vec<Guest>, Status)| r.0.name.to_lowercase();
+        rows.sort_by(|a, b| {
+            let primary = if key == "name" { name(a).cmp(&name(b)) } else { rank(a).cmp(&rank(b)) };
+            let primary = if desc { primary.reverse() } else { primary };
+            primary.then_with(|| name(a).cmp(&name(b)))
+        });
+    }
     let people: usize = rows.iter().map(|(_, g, _)| g.len()).sum();
     let sel = |a: &Option<String>, v: &str| a.as_deref() == Some(v);
-    // Keep the current filters when an inline form falls back to a full POST + redirect.
-    let back = {
+    let list_href = |extra: &[(&str, &str)]| {
         let mut parts = vec![];
         for (k, v) in [("q", &q.q), ("tier", &q.tier), ("status", &q.status), ("side", &q.side), ("filter", &q.filter), ("added", &q.added)] {
             if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
                 parts.push(format!("{k}={}", urlencoding::encode(v)));
             }
         }
+        for (k, v) in extra {
+            parts.push(format!("{k}={}", urlencoding::encode(v)));
+        }
         if parts.is_empty() { "/admin/households".to_string() } else { format!("/admin/households?{}", parts.join("&")) }
     };
+    let sort_params: Vec<(&str, &str)> = match sort_key {
+        Some(k) => vec![("sort", k), ("dir", if desc { "desc" } else { "asc" })],
+        None => vec![],
+    };
+    // Keep the current filters and sort when an inline form falls back to a full POST + redirect.
+    let back = list_href(&sort_params);
     let tier_counts: Vec<(i64, usize, usize)> = (1..=3)
         .map(|t| {
             let hs: Vec<&Household> = snap.households.iter().filter(|h| h.tier == t).collect();
@@ -827,6 +901,14 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                 }
                 select name="filter" aria-label="Other" {
                     option value="" { "Everything" }
+                    optgroup label="Needs filling in" {
+                        option value="incomplete" selected[sel(&q.filter, "incomplete")] { "Anything missing (email, address or surname)" }
+                        option value="some_email" selected[sel(&q.filter, "some_email")] { "Someone missing an email" }
+                        option value="no_email" selected[sel(&q.filter, "no_email")] { "No email for anyone" }
+                        option value="no_address" selected[sel(&q.filter, "no_address")] { "Missing address" }
+                        option value="no_surname" selected[sel(&q.filter, "no_surname")] { "Someone missing a surname" }
+                        option value="unnamed_plus_one" selected[sel(&q.filter, "unnamed_plus_one")] { "Plus one not named yet" }
+                    }
                     option value="unchecked" selected[sel(&q.filter, "unchecked")] { "Not checked yet" }
                     option value="checked" selected[sel(&q.filter, "checked")] { "Checked correct" }
                     option value="australia" selected[sel(&q.filter, "australia")] { "Lives in Australia" }
@@ -834,8 +916,6 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                     option value="unlikely" selected[sel(&q.filter, "unlikely")] { "Unlikely to come" }
                     option value="likely" selected[sel(&q.filter, "likely")] { "Not marked unlikely" }
                     option value="no_events" selected[sel(&q.filter, "no_events")] { "Not invited to anything" }
-                    option value="no_email" selected[sel(&q.filter, "no_email")] { "Missing email" }
-                    option value="no_address" selected[sel(&q.filter, "no_address")] { "Missing address" }
                     option value="std_unsent" selected[sel(&q.filter, "std_unsent")] { "Save the date not sent" }
                     option value="invite_unsent" selected[sel(&q.filter, "invite_unsent")] { "Invitation not sent" }
                     option value="std_opened" selected[sel(&q.filter, "std_opened")] { "Opened save the date email" }
@@ -848,6 +928,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                     option value="" { "Added by anyone" }
                     @for a in &added_by_values { option value=(a) selected[q.added.as_deref() == Some(a.as_str())] { "Added by " (a) } }
                 }
+                @for (k, v) in &sort_params { input type="hidden" name=(k) value=(v); }
                 noscript { button.button type="submit" { "Filter" } }
             }
             a.button.primary href="/admin/households/new" { @if s.user.is_owner() { "New household" } @else { "Request a household" } }
@@ -896,14 +977,18 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
         div.table-wrap {
             table.list.households {
                 thead { tr {
-                    th { "Household" }
-                    th.num { "#" }
-                    th { "Tier" }
-                    th title="Lives in Australia" { "AU" }
-                    th title="Unlikely to come" { "Likely?" }
-                    th { "Invited to" }
-                    th title="Names and details checked" { "Checked" }
-                    th title="Reply status · S = save the date sent, I = invitation sent" { "Reply · sent" }
+                    @for (key, label, title, class) in SORT_COLUMNS {
+                        @let active = sort_key == Some(key);
+                        // First click sorts ascending; clicking the active column flips it.
+                        @let next = if active && !desc { "desc" } else { "asc" };
+                        th class=[(!class.is_empty()).then_some(class)] title=[(!title.is_empty()).then_some(title)]
+                            aria-sort=[active.then_some(if desc { "descending" } else { "ascending" })] {
+                            a.sort href=(list_href(&[("sort", key), ("dir", next)])) {
+                                (label)
+                                @if active { span.sort-arrow { @if desc { " ▼" } @else { " ▲" } } }
+                            }
+                        }
+                    }
                 } }
                 tbody {
                     @for (h, gs, status) in &rows {
@@ -930,6 +1015,17 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                                 } }
                             }
                             td.num { (gs.len()) }
+                            @let (have, want) = email_counts(gs);
+                            @let missing: Vec<String> = gs.iter()
+                                .filter(|g| !g.is_child && !g.unnamed_plus_one() && g.email.trim().is_empty())
+                                .map(|g| g.full_name()).collect();
+                            td.num.emails {
+                                span class=(if want > 0 && have == 0 { "emails-none" } else if have < want { "emails-some" } else { "emails-all" })
+                                    title=[(!missing.is_empty()).then(|| format!("No email: {}", missing.join(", ")))] {
+                                    (have) "/" (want)
+                                }
+                                @if !h.email.trim().is_empty() { div.small.muted title={ "Household email: " (h.email) } { "+ household" } }
+                            }
                             td { (tier_toggle(&s.csrf, h, &back)) }
                             td { (australia_toggle(&s.csrf, h, &back)) }
                             td { (unlikely_toggle(&s.csrf, h, &back)) }
@@ -946,7 +1042,7 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                             }
                         }
                     }
-                    @if rows.is_empty() { tr { td colspan="7" { p.muted { "Nothing matches those filters." } } } }
+                    @if rows.is_empty() { tr { td colspan=(SORT_COLUMNS.len()) { p.muted { "Nothing matches those filters." } } } }
                 }
             }
         }
@@ -1809,7 +1905,7 @@ async fn send_page(State(st): State<AppState>, Member(s): Member, Query(fl): Que
             div.alert.bad {
                 strong { "Email safety lock is on. " }
                 "Every email, including bulk sends and tests, goes only to " strong { (lock) } " instead of the guest, "
-                "with \"Not sent to …\" in the subject. Everything else is recorded as if it were real (sent, opened), so wipe that before going live. "
+                "with a small note at the bottom saying who it was meant for (the subject is left as guests would see it). Everything else is recorded as if it were real (sent, opened), so wipe that before going live. "
                 "To send for real, remove " code { "redirect_all_to" } " from wedding.toml and redeploy."
             }
         }
@@ -2054,8 +2150,9 @@ struct GmailCallback {
     error: Option<String>,
 }
 
-/// Google sends the browser back here. The admin session cookie is SameSite=Strict, so it isn't
-/// sent on this cross-site arrival; this page hops (same-site) to /admin/gmail/finish, which is.
+/// Google sends the browser back here and this page hops (same-site) to /admin/gmail/finish.
+/// The hop dates from when the session cookie was SameSite=Strict and so missing on this
+/// cross-site arrival; with Lax it isn't strictly needed, but it's harmless.
 async fn gmail_return(axum::extract::RawQuery(q): axum::extract::RawQuery) -> axum::response::Response {
     use axum::response::IntoResponse;
     let next = format!("/admin/gmail/finish?{}", q.unwrap_or_default());

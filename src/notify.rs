@@ -235,7 +235,9 @@ impl Worker {
         let from = format!("{} <{}>", display.split('<').next().unwrap_or(&display).trim(), connected.email);
         // Safety lock: send it to the lock address instead, saying who it would have gone to.
         let (to, subject) = match self.cfg.email_lock() {
-            Some(lock) => (lock.to_string(), format!("[Not sent to {}] {}", msg.to, msg.subject)),
+            // Same subject as the real thing (an address in the subject looks like spam); the email
+            // itself says who it was meant for.
+            Some(lock) => (lock.to_string(), msg.subject.clone()),
             None => (msg.to.clone(), msg.subject.clone()),
         };
         let raw = crate::gmail::mime(&from, &to, self.cfg.email.reply_to.as_deref(), &subject, &msg.text, &msg.html, &msg.attachments);

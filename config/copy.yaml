@@ -145,6 +145,8 @@ email:
     kicker: "Save the date"
     text: ""   # an optional sentence above the button; empty for none
     button: "More details"
+  # A short line in real text under the button (emails that are only a picture tend to land in spam).
+  sign_off: "With love, {names}"
   invitation:
     subject: "You're invited: {names}"
     kicker: "You're invited"

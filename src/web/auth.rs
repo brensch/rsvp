@@ -6,8 +6,10 @@
 //!   `pending` until an owner approves it, unless the person used an invite
 //!   link (created by an owner or `rsvp invite` on the server).
 //! * Sessions are random 160-bit ids in a `__Host-` cookie (Secure, HttpOnly,
-//!   SameSite=Strict); only their SHA-256 is stored. Every admin form carries a
-//!   per-session CSRF token as well.
+//!   SameSite=Lax); only their SHA-256 is stored. Every admin form carries a
+//!   per-session CSRF token as well. Lax, not Strict: iOS Safari labels some
+//!   reloads of a restored tab "cross-site" and drops Strict cookies, which
+//!   signed people out at random. Lax still keeps the cookie off cross-site POSTs.
 
 use std::time::{Duration, Instant};
 
@@ -155,7 +157,7 @@ impl Session {
 }
 
 fn session_cookie(value: &str, max_age_secs: i64) -> HeaderValue {
-    HeaderValue::from_str(&format!("{SESSION_COOKIE}={value}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={max_age_secs}")).unwrap()
+    HeaderValue::from_str(&format!("{SESSION_COOKIE}={value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}")).unwrap()
 }
 
 async fn create_session(st: &AppState, user_id: &str, ip: &str) -> anyhow::Result<HeaderValue> {

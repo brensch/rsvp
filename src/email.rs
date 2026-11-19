@@ -80,6 +80,9 @@ pub fn build(
     let kicker = pr.f(&format!("{k}.kicker"), &vars);
     let sentence = pr.f(&format!("{k}.text"), &vars);
     let button = pr.f(&format!("{k}.button"), &vars);
+    // Some real text, so the email isn't just a picture (picture-only emails look like spam).
+    let sign_off = pr.f("email.sign_off", &vars);
+    let lock_note = cfg.email_lock().map(|_| format!("Safety lock test: this email would have gone to {to}."));
     let wedding_of = pr.opt("website.the_wedding_of");
     let mut extra = Vec::new();
     if australia {
@@ -112,10 +115,11 @@ pub fn build(
                 meta name="color-scheme" content="light only";
                 title { (subject) }
             }
-            body style={ "margin:0;padding:0;background:" (t.paper) ";" } {
-                table role="presentation" width="100%" cellpadding="0" cellspacing="0" style={ "background:" (t.paper) ";" } {
-                    tr { td align="center" style="padding:16px 6px 40px" {
-                        table role="presentation" width="100%" cellpadding="0" cellspacing="0" style={ "max-width:540px;font-family:" (serif) ";text-align:center" } {
+            // bgcolor attributes as well as CSS: some mail apps (e.g. Proton) strip CSS backgrounds.
+            body bgcolor=(t.paper) style={ "margin:0;padding:0;background:" (t.paper) ";" } {
+                table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor=(t.paper) style={ "background:" (t.paper) ";" } {
+                    tr { td align="center" bgcolor=(t.paper) style={ "padding:14px 0 40px;background:" (t.paper) } {
+                        table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor=(t.paper) style={ "max-width:540px;font-family:" (serif) ";text-align:center;background:" (t.paper) } {
                             tr { td align="center" {
                                 a href=(url) { img src=(card_src) width="540" alt=(header_alt) style={ "display:block;margin:0 auto;width:100%;max-width:540px;height:auto;border:0;font-family:" (serif) ";font-size:16px;color:" (t.ink) }; }
                             } }
@@ -128,6 +132,12 @@ pub fn build(
                             tr { td style="padding:28px 0 0" {
                                 a href=(url) style={ "display:inline-block;background:" (t.accent) ";color:" (t.paper) ";font-size:15px;letter-spacing:2px;text-transform:uppercase;text-decoration:none;padding:15px 30px;border-radius:2px" } { (button) }
                             } }
+                            @if !sign_off.trim().is_empty() {
+                                tr { td style={ "font-size:18px;font-style:italic;line-height:1.5;color:" (t.muted) ";padding:30px 12px 0" } { (sign_off) } }
+                            }
+                            @if let Some(n) = &lock_note {
+                                tr { td style={ "font-size:12px;color:" (t.muted) ";padding:36px 12px 0" } { (n) } }
+                            }
                         }
                     } }
                 }
@@ -141,6 +151,12 @@ pub fn build(
         text.push_str(&format!("{sentence}\n\n"));
     }
     text.push_str(&format!("{button}: {url}\n"));
+    if !sign_off.trim().is_empty() {
+        text.push_str(&format!("\n{sign_off}\n"));
+    }
+    if let Some(n) = &lock_note {
+        text.push_str(&format!("\n({n})\n"));
+    }
     for n in &extra {
         text.push_str(&format!("\n{n}\n"));
     }

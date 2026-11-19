@@ -162,7 +162,7 @@ fn same_origin(headers: &HeaderMap, base_url: &str) -> bool {
         Some(origin) => origin == base_url,
         None => match fetch_site {
             Some(site) => site == "same-origin" || site == "none",
-            None => true, // non-browser client; cookies are SameSite=Strict anyway
+            None => true, // non-browser client; SameSite=Lax keeps cookies off cross-site posts anyway
         },
     }
 }

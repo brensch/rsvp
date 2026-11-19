@@ -4,7 +4,8 @@
 // records that the email was opened.
 #let W = data.wedding
 #let C = data.couple
-#set page(width: 104mm, height: auto, margin: (x: 1.5mm, top: 1.5mm, bottom: 2.5mm), fill: paper-fill)
+// As wide as its widest line (the names), so the picture fills a phone screen.
+#set page(width: auto, height: auto, margin: (x: 3mm, top: 1.5mm, bottom: 2.5mm), fill: paper-fill)
 #set align(center)
 #set par(spacing: 0.35em)
 
