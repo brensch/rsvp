@@ -26,6 +26,9 @@ static VERSION: LazyLock<String> = LazyLock::new(|| {
     for (_, _, body) in STATIC {
         all.push_str(body);
     }
+    for (_, bytes) in ICONS {
+        all.push_str(&crate::tokens::sha256_hex_bytes(bytes));
+    }
     crate::tokens::sha256_hex(&all)[..10].to_string()
 });
 
@@ -33,13 +36,26 @@ pub fn asset(name: &str) -> String {
     format!("/static/{name}?v={}", *VERSION)
 }
 
+/// Favicons, drawn from the emblem by tools/make_favicons.sh. Served under /static/ like the rest.
+static ICONS: &[(&str, &[u8])] = &[
+    ("favicon-32.png", include_bytes!("../../static/favicon-32.png")),
+    ("favicon-192.png", include_bytes!("../../static/favicon-192.png")),
+    ("apple-touch-icon.png", include_bytes!("../../static/apple-touch-icon.png")),
+];
+
 pub async fn static_file(Path(file): Path<String>) -> Response {
-    match STATIC.iter().find(|(n, _, _)| *n == file) {
-        Some((_, ct, body)) => {
-            ([(header::CONTENT_TYPE, *ct), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], *body).into_response()
-        }
-        None => not_found(),
+    if let Some((_, ct, body)) = STATIC.iter().find(|(n, _, _)| *n == file) {
+        return ([(header::CONTENT_TYPE, *ct), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], *body).into_response();
     }
+    if let Some((_, bytes)) = ICONS.iter().find(|(n, _)| *n == file) {
+        return ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], *bytes).into_response();
+    }
+    not_found()
+}
+
+/// Browsers ask for /favicon.ico on their own (and for non-HTML responses); a PNG body is fine.
+pub async fn favicon_ico() -> Response {
+    ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "public, max-age=86400")], ICONS[0].1).into_response()
 }
 
 pub async fn font_file(Path(file): Path<String>) -> Response {
@@ -68,6 +84,9 @@ fn head(title: &str, css: &str) -> Markup {
         title { (title) }
         @for f in fonts { link rel="preload" href={ "/fonts/" (f) } as="font" type="font/woff2" crossorigin; }
         link rel="stylesheet" href=(asset(css));
+        link rel="icon" type="image/png" sizes="32x32" href=(asset("favicon-32.png"));
+        link rel="icon" type="image/png" sizes="192x192" href=(asset("favicon-192.png"));
+        link rel="apple-touch-icon" href=(asset("apple-touch-icon.png"));
     }
 }
 

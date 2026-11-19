@@ -66,6 +66,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(guest::home))
+        .route("/favicon.ico", get(ui::favicon_ico))
         .route("/robots.txt", get(|| async { "User-agent: *\nDisallow: /\n" }))
         .route("/healthz", get(healthz))
         .route("/static/{file}", get(ui::static_file))

@@ -37,7 +37,11 @@ pub fn random_secret(bytes: usize) -> String {
 }
 
 pub fn sha256_hex(s: &str) -> String {
-    hex::encode(Sha256::digest(s.as_bytes()))
+    sha256_hex_bytes(s.as_bytes())
+}
+
+pub fn sha256_hex_bytes(b: &[u8]) -> String {
+    hex::encode(Sha256::digest(b))
 }
 
 /// Keyed hash of an IP for abuse correlation without storing raw addresses.
