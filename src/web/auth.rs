@@ -139,19 +139,18 @@ impl FromRequestParts<AppState> for Member {
 }
 
 impl Session {
-    #[allow(clippy::result_large_err)] // Err is the error page itself (see F::csrf)
-    pub fn check_csrf(&self, provided: Option<&str>) -> Result<(), Response> {
+    /// Err is the error page to show (boxed: a Response is large to pass around in a Result).
+    pub fn check_csrf(&self, provided: Option<&str>) -> Result<(), Box<Response>> {
         match provided {
             Some(t) if tokens::constant_time_eq(t, &self.csrf) => Ok(()),
-            _ => Err(ui::error_page(StatusCode::FORBIDDEN, "Session expired", "Please reload the page and try again.")),
+            _ => Err(Box::new(ui::error_page(StatusCode::FORBIDDEN, "Session expired", "Please reload the page and try again."))),
         }
     }
-    #[allow(clippy::result_large_err)]
-    pub fn require_owner(&self) -> Result<(), Response> {
+    pub fn require_owner(&self) -> Result<(), Box<Response>> {
         if self.user.is_owner() {
             Ok(())
         } else {
-            Err(ui::error_page(StatusCode::FORBIDDEN, "Owners only", "Ask one of the couple to do this for you."))
+            Err(Box::new(ui::error_page(StatusCode::FORBIDDEN, "Owners only", "Ask one of the couple to do this for you.")))
         }
     }
 }
@@ -303,7 +302,7 @@ struct CsrfForm {
 
 async fn logout(State(st): State<AppState>, AnyUser(s): AnyUser, headers: HeaderMap, Form(f): Form<CsrfForm>) -> AppResult {
     if let Err(r) = s.check_csrf(f._csrf.as_deref()) {
-        return Ok(r);
+        return Ok(*r);
     }
     if let Some(raw) = cookie(&headers, SESSION_COOKIE) {
         let hash = tokens::sha256_hex(raw);
@@ -484,7 +483,7 @@ async fn register_finish(
 
 async fn add_passkey_start(State(st): State<AppState>, AnyUser(s): AnyUser, headers: HeaderMap) -> AppResult {
     if let Err(r) = s.check_csrf(headers.get("x-csrf").and_then(|v| v.to_str().ok())) {
-        return Ok(r);
+        return Ok(*r);
     }
     let uid = s.user.id.clone();
     let existing: Vec<CredentialID> = st
@@ -513,7 +512,7 @@ async fn add_passkey_finish(
     Json(cred): Json<RegisterPublicKeyCredential>,
 ) -> AppResult {
     if let Err(r) = s.check_csrf(headers.get("x-csrf").and_then(|v| v.to_str().ok())) {
-        return Ok(r);
+        return Ok(*r);
     }
     let Some(Ceremony::AddPasskey { reg, user_id }) = take_ceremony(&st, &headers) else {
         return Ok(api_err(StatusCode::BAD_REQUEST, "Timed out. Please try again."));

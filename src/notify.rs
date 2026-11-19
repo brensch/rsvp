@@ -236,8 +236,11 @@ impl Worker {
         let (r, cfg, env) = (self.renderer.clone(), self.cfg.clone(), self.env.clone());
         let (kind, to, sid) = (send.kind.clone(), send.address.clone(), send_id.clone());
         let hid = h.id;
-        let msg =
-            tokio::task::spawn_blocking(move || crate::email::build(&r, &cfg, &env, &kind, h, guests, responses, &to, &sid)).await??;
+        let msg = tokio::task::spawn_blocking(move || {
+            let draft = crate::email::Draft { kind, household: h, guests, responses, to, send_id: sid };
+            crate::email::build(&r, &cfg, &env, draft)
+        })
+        .await??;
         // The picture the email loads (and counts) from /e/<id>.png.
         let card = crate::email::card_file(&self.env, hid, &send.kind);
         std::fs::create_dir_all(card.parent().unwrap())?;

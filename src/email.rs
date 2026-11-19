@@ -43,18 +43,19 @@ pub fn tracking_url(cfg: &Config, send_id: &str) -> String {
     format!("{}/e/{send_id}.png", cfg.site.base_url)
 }
 
-#[allow(clippy::too_many_arguments)] // everything one personalised email needs
-pub fn build(
-    renderer: &Renderer,
-    cfg: &Config,
-    env: &Env,
-    kind: &str,
-    h: Household,
-    guests: Vec<Guest>,
-    responses: Vec<Response>,
-    to: &str,
-    send_id: &str,
-) -> Result<Message> {
+/// One personalised email: which kind, for which household, to which address.
+pub struct Draft {
+    pub kind: String,
+    pub household: Household,
+    pub guests: Vec<Guest>,
+    pub responses: Vec<Response>,
+    pub to: String,
+    pub send_id: String,
+}
+
+pub fn build(renderer: &Renderer, cfg: &Config, env: &Env, draft: Draft) -> Result<Message> {
+    let Draft { kind, household: h, guests, responses, to, send_id } = draft;
+    let (kind, to, send_id) = (kind.as_str(), to.as_str(), send_id.as_str());
     let asset_kind = match kind {
         "save_the_date" => Kind::SaveTheDate,
         "invitation" => Kind::Invitation,

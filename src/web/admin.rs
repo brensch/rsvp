@@ -120,9 +120,7 @@ impl F {
     fn all(&self, k: &str) -> Vec<String> {
         self.1.iter().filter(|(key, _)| key == k).map(|(_, v)| v.clone()).collect()
     }
-    // Err is a ready-made error page that handlers return directly (the guard! pattern).
-    #[allow(clippy::result_large_err)]
-    fn csrf(&self, s: &Session) -> Result<(), Response> {
+    fn csrf(&self, s: &Session) -> Result<(), Box<Response>> {
         s.check_csrf(self.0.get("_csrf").map(String::as_str))
     }
 }
@@ -130,7 +128,7 @@ impl F {
 macro_rules! guard {
     ($e:expr) => {
         if let Err(r) = $e {
-            return Ok(r);
+            return Ok(*r);
         }
     };
 }
@@ -497,6 +495,11 @@ async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Que
         }
     };
 
+    // Latest first opens of any email, newest first.
+    let mut opens: Vec<(&str, i64, &str)> =
+        snap.mail.iter().filter_map(|((hid, kind), m)| m.first_opened_at.as_deref().map(|at| (at, *hid, kind.as_str()))).collect();
+    opens.sort_by(|a, b| b.0.cmp(a.0));
+
     let body = html! {
         @if pending_requests > 0 {
             div.alert.warn { strong { (pending_requests) " household request(s)" } " waiting for approval. " a href="/admin/households" { "Review them" } }
@@ -529,6 +532,48 @@ async fn dashboard(State(st): State<AppState>, Member(s): Member, Query(fl): Que
                 span.tile-label { "Added to calendar" } span.tile-value { (added) small { " / " (total) } }
                 div.meter { span class=(pct_class((added * 100).checked_div(total).unwrap_or(0))) {} }
                 span.tile-sub { a href="/admin/households?filter=calendar" { "See who" } " · households that downloaded their calendar file" }
+            }
+        }
+        section.card.emails {
+            div.card-head {
+                h2 { "Emails" }
+                span.muted.small { "Opened means the picture at the top of the email loaded. Apple Mail loads pictures by itself, so some \"opened\" are just delivered." }
+            }
+            div.table-wrap.flush {
+                table.tier-table {
+                    thead { tr { th {} th.num { "Sent" } th { "Opened (of sent)" } th {} } }
+                    tbody {
+                        @for (kind, label, sent_f, opened_f, unopened_f) in [
+                            ("save_the_date", "Save the date", "std_sent", "std_opened", "std_sent_unopened"),
+                            ("invitation", "Invitation", "invite_sent", "invite_opened", "invite_sent_unopened"),
+                        ] {
+                            @let sent: Vec<&Household> = snap.households.iter().filter(|h| if kind == "save_the_date" { h.std_sent_at.is_some() } else { h.invite_sent_at.is_some() }).collect();
+                            @let opened = sent.iter().filter(|h| snap.mail(h.id, kind).is_some_and(|m| m.opened > 0)).count();
+                            tr {
+                                td.strong { (label) }
+                                td.num.big { a href={ "/admin/households?filter=" (sent_f) } { (sent.len()) } small.muted { " / " (total) } }
+                                td { (progress(opened, sent.len())) }
+                                td.small {
+                                    @if !sent.is_empty() {
+                                        a href={ "/admin/households?filter=" (opened_f) } { "Opened" } " · "
+                                        a href={ "/admin/households?filter=" (unopened_f) } { "Not opened yet" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            @if !opens.is_empty() {
+                h3 { "Latest opens" }
+                ul.feed {
+                    @for (at, hid, kind) in opens.iter().take(10) {
+                        li {
+                            a href={ "/admin/households/" (hid) } { (names.get(hid).copied().unwrap_or("?")) }
+                            span.muted { " · " (if *kind == "save_the_date" { "save the date" } else { "invitation" }) " · " (when(cfg, at)) }
+                        }
+                    }
+                }
             }
         }
         section.card.by-tier {
@@ -832,7 +877,12 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                 Some("likely") => !h.unlikely,
                 Some("std_unsent") => h.std_sent_at.is_none(),
                 Some("invite_unsent") => h.invite_sent_at.is_none(),
+                Some("std_sent") => h.std_sent_at.is_some(),
                 Some("std_opened") => snap.mail(h.id, "save_the_date").is_some_and(|m| m.opened > 0),
+                Some("std_sent_unopened") => h.std_sent_at.is_some() && !snap.mail(h.id, "save_the_date").is_some_and(|m| m.opened > 0),
+                Some("invite_sent") => h.invite_sent_at.is_some(),
+                Some("invite_opened") => snap.mail(h.id, "invitation").is_some_and(|m| m.opened > 0),
+                Some("invite_sent_unopened") => h.invite_sent_at.is_some() && !snap.mail(h.id, "invitation").is_some_and(|m| m.opened > 0),
                 Some("invite_opened_no_reply") => h.rsvp_at.is_none() && snap.mail(h.id, "invitation").is_some_and(|m| m.opened > 0),
                 Some("nudged") => h.nudged_at.is_some() && h.rsvp_at.is_none(),
                 Some("calendar") => snap.calendar.contains_key(&h.id),
@@ -942,7 +992,12 @@ async fn households(State(st): State<AppState>, Member(s): Member, Query(q): Que
                     option value="no_events" selected[sel(&q.filter, "no_events")] { "Not invited to anything" }
                     option value="std_unsent" selected[sel(&q.filter, "std_unsent")] { "Save the date not sent" }
                     option value="invite_unsent" selected[sel(&q.filter, "invite_unsent")] { "Invitation not sent" }
+                    option value="std_sent" selected[sel(&q.filter, "std_sent")] { "Save the date sent" }
                     option value="std_opened" selected[sel(&q.filter, "std_opened")] { "Opened save the date email" }
+                    option value="std_sent_unopened" selected[sel(&q.filter, "std_sent_unopened")] { "Save the date sent, not opened" }
+                    option value="invite_sent" selected[sel(&q.filter, "invite_sent")] { "Invitation sent" }
+                    option value="invite_opened" selected[sel(&q.filter, "invite_opened")] { "Opened invitation email" }
+                    option value="invite_sent_unopened" selected[sel(&q.filter, "invite_sent_unopened")] { "Invitation sent, not opened" }
                     option value="invite_opened_no_reply" selected[sel(&q.filter, "invite_opened_no_reply")] { "Opened invitation, no reply" }
                     option value="nudged" selected[sel(&q.filter, "nudged")] { "No reply 2+ days after opening invitation" }
                     option value="calendar" selected[sel(&q.filter, "calendar")] { "Added to calendar" }
