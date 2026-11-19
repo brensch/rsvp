@@ -109,7 +109,7 @@ V = []
 def add(title, note, rgb): V.append((title, note, np.clip(rgb, 0, 1)))
 
 add("Unedited crop", "For reference: the photo before any colour work.", load(orig_path))
-add("Current", "What's on the site now: white balance, skin tone and arm shadow fixed.", BASE)
+add("Current", "What's on the site now: white balance, skin warmth softened, arm shadow evened.", BASE)
 add("Gentle contrast", "A soft S-curve: a little more depth without crushing the suit or the dress.", R(s_curve(L(BASE), 0.10)))
 add("Brighter and airier", "Up a third of a stop with lifted shadows. Lighter and more 'wedding'.", R(lift_shadows(L(exposure(BASE, 0.33)), 0.5)))
 add("Window recovered", "Brings back detail in the bright window and sky so the city reads better.", R(recover_highlights(L(BASE), 0.8)))
