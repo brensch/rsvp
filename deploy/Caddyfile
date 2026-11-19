@@ -11,16 +11,19 @@
 		max_size 150MB
 	}
 	header -Server
-	# Bow preview pages (static, outside the app): /laurels is the original set of bow styles,
-	# /bows the curled-cord variations (tools/bow_preview.py). Files live in /var/www.
-	handle /laurels {
-		root * /var/www/laurels
-		rewrite * /index.html
-		file_server
+	# Static preview pages, outside the app: /var/www/<name>/index.html is served at /<name>,
+	# and files beside it at /<name>/<file> (e.g. /laurels, /bows, /photo). Only paths that exist
+	# on disk match, so everything else falls through to the app; adding a page needs no change here.
+	@static {
+		not path /
+		file {
+			root /var/www
+			try_files {path}/index.html {path}
+		}
 	}
-	handle /bows {
-		root * /var/www/bows
-		rewrite * /index.html
+	handle @static {
+		root * /var/www
+		try_files {path}/index.html {path}
 		file_server
 	}
 	handle {
