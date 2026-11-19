@@ -141,7 +141,7 @@ email:
   # Laid out like the save the date page (kicker, names, date, place), then this one sentence
   # and the button. "The wedding of" comes from website.the_wedding_of.
   save_the_date:
-    subject: "Save the date: {names}, {date_medium}"
+    subject: "Save the date: {names}'s Wedding, {date_medium}"
     kicker: "Save the date"
     text: ""   # an optional sentence above the button; empty for none
     button: "More details"
