@@ -1,13 +1,36 @@
 # Caddy terminates TLS (automatic Let's Encrypt) and proxies to the app on loopback.
 # It overwrites X-Forwarded-For with the real client IP, which the app trusts
 # only because the request arrives from 127.0.0.1.
+#
+# Caddy is set up once and left running. Deploys restart only the app (`systemctl restart rsvp`);
+# while the app is down, Caddy holds each request and keeps retrying the connection for up to
+# 30s, so a redeploy shows as a short pause rather than an error page.
 {DOMAIN} {
 	encode zstd gzip
 	request_body {
 		max_size 150MB
 	}
 	header -Server
-	reverse_proxy 127.0.0.1:8080
+	# Bow preview pages (static, outside the app): /laurels is the original set of bow styles,
+	# /bows the curled-cord variations (tools/bow_preview.py). Files live in /var/www.
+	handle /laurels {
+		root * /var/www/laurels
+		rewrite * /index.html
+		file_server
+	}
+	handle /bows {
+		root * /var/www/bows
+		rewrite * /index.html
+		file_server
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8080 {
+			# Retry while the app restarts: only failed connections are retried, so a request
+			# the app has started handling is never sent twice.
+			lb_try_duration 30s
+			lb_try_interval 250ms
+		}
+	}
 	log {
 		output file /var/log/caddy/access.log {
 			roll_size 20MiB

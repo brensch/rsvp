@@ -662,6 +662,29 @@ const SORT_COLUMNS: [(&str, &str, &str, &str); 9] = [
     ("reply", "Reply · sent", "Reply status · S = save the date sent, I = invitation sent", ""),
 ];
 
+/// For email entries in a household's activity: which email, and who it went to.
+fn audit_whom(action: &str, detail: &str) -> Option<String> {
+    let d: serde_json::Value = serde_json::from_str(detail).ok()?;
+    let kind = |d: &serde_json::Value| d["kind"].as_str().map(|k| k.replace('_', " "));
+    let test = if d["test"].as_bool() == Some(true) { " (test)" } else { "" };
+    match action {
+        "email.sent" => {
+            let to = d["to"].as_str()?;
+            let mut s = format!("{} to {to}{test}", kind(&d).unwrap_or_else(|| "email".into()));
+            if d["redirected"].as_bool() == Some(true) {
+                s.push_str(&format!(", delivered to {} (safety lock)", d["delivered_to"].as_str().unwrap_or("?")));
+            }
+            Some(s)
+        }
+        "email.queued" => {
+            let to: Vec<&str> = d["emails"].as_array()?.iter().filter_map(|e| e["to"].as_str()).collect();
+            Some(format!("{} for {}{test}", kind(&d).unwrap_or_else(|| "email".into()), to.join(", ")))
+        }
+        "email.queue" | "email.test" => kind(&d),
+        _ => None,
+    }
+}
+
 fn side_short(cfg: &Config, side: &str) -> String {
     match side {
         "a" => cfg.couple.a_first.clone(),
@@ -1440,7 +1463,7 @@ async fn household(State(st): State<AppState>, Member(s): Member, Path(id): Path
                 section.card {
                     h2 { "Activity" }
                     ul.feed.small {
-                        @for a in &log { li { span.muted { (when(cfg, &a.at)) } " · " (a.actor) " · " (a.action) } }
+                        @for a in &log { li { span.muted { (when(cfg, &a.at)) } " · " (a.actor) " · " (a.action) @if let Some(w) = audit_whom(&a.action, &a.detail) { " · " (w) } } }
                         @if log.is_empty() { li.muted { "Nothing yet." } }
                     }
                 }
